@@ -1,0 +1,42 @@
+
+# Arduino / ESP32
+*.hex
+*.elf
+*.bin
+*.eep
+*.map
+*.o
+*.d
+build/
+out/
+
+# PlatformIO
+.pio/
+
+# VS Code
+.vscode/.browse.c_cpp.db
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch/
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Credentials
+.env
+.env.*
+!.env.example
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+
+# Operating system
+.DS_Store
+Thumbs.db
+desktop.ini
