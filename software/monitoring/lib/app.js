@@ -25,14 +25,16 @@ async function jsonBody(req) {
   try { return JSON.parse((await rawBody(req)).toString() || "{}"); } catch { return {}; }
 }
 
+// Values pasted into Vercel often carry stray spaces/newlines/quotes, so compare them trimmed.
+const clean = (v) => String(v ?? "").trim().replace(/^(["'])(.*)\1$/, "$2");
 const deviceAuth = (req, res, next) => {
-  const expected = process.env.DEVICE_API_KEY;
-  if (!expected || req.header("x-api-key") !== expected) return res.status(401).json({ error: "bad api key" });
+  const expected = clean(process.env.DEVICE_API_KEY);
+  if (!expected || clean(req.header("x-api-key")) !== expected) return res.status(401).json({ error: "bad api key" });
   next();
 };
 const dashAuth = (req, res, next) => {
-  const pw = process.env.DASHBOARD_PASSWORD;
-  if (pw && req.header("x-dashboard-password") !== pw) return res.status(401).json({ error: "password required" });
+  const pw = clean(process.env.DASHBOARD_PASSWORD);
+  if (pw && clean(req.header("x-dashboard-password")) !== pw) return res.status(401).json({ error: "password required" });
   next();
 };
 
