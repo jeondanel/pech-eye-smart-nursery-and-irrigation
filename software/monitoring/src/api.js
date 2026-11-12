@@ -1,13 +1,13 @@
 const PW_KEY = "pecheye_pw";
 const getPw = () => { try { return localStorage.getItem(PW_KEY) || ""; } catch { return ""; } };
+export const setPw = (p) => { try { localStorage.setItem(PW_KEY, p); } catch { /* ignore */ } };
 
-async function req(url, opts = {}, retried = false) {
+// On 401 we tell the app to show its login screen (see App.jsx) instead of a browser prompt.
+async function req(url, opts = {}) {
   const r = await fetch(url, { ...opts, headers: { ...opts.headers, "x-dashboard-password": getPw() } });
-  if (r.status === 401 && !retried) {
-    const p = window.prompt("Dashboard password");
-    if (p === null) throw new Error("Password required");
-    try { localStorage.setItem(PW_KEY, p); } catch { /* ignore */ }
-    return req(url, opts, true);
+  if (r.status === 401) {
+    window.dispatchEvent(new CustomEvent("pecheye-auth", { detail: { hadPassword: !!getPw() } }));
+    throw new Error("Password required");
   }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
