@@ -1,0 +1,34 @@
+:root { --green: #2e7d32; --bg: #f4f7f4; --card: #fff; --text: #1d2b1d; --muted: #6b7a6b; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
+.app { max-width: 1200px; margin: 0 auto; padding: 16px; }
+header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+h1 { margin: 0; font-size: 1.5rem; color: var(--green); }
+h3 { margin: 0 0 8px; }
+nav button { margin-right: 6px; background: transparent; color: var(--text); border: 1px solid #c8d4c8; }
+nav button.on { background: var(--green); color: #fff; border-color: var(--green); }
+button { background: var(--green); color: #fff; border: 0; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: .9rem; }
+button.ghost { background: transparent; color: var(--green); border: 1px solid var(--green); }
+button:disabled { opacity: .6; cursor: wait; }
+.card { background: var(--card); border-radius: 12px; padding: 14px; margin: 12px 0; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 12px 0; }
+.stats .card { margin: 0; }
+.stat .label { color: var(--muted); font-size: .8rem; }
+.stat .value { font-size: 1.5rem; font-weight: 600; }
+.stat .sub { color: var(--muted); font-size: .75rem; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+.muted { color: var(--muted); font-size: .85rem; }
+.error { color: #c62828; }
+.ok { color: var(--green); }
+.row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+.thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+.thumbs img { width: 100%; aspect-ratio: 4/3; object-fit: cover; border-radius: 6px; cursor: pointer; border: 2px solid transparent; }
+.thumbs img.sel { border-color: var(--green); }
+img.big { width: 100%; border-radius: 8px; margin-bottom: 8px; }
+.grid { display: grid; gap: 3px; margin: 10px 0; }
+.cell { aspect-ratio: 1; border-radius: 4px; }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: .8rem; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+.pill { font-size: .7rem; padding: 2px 8px; border-radius: 99px; background: #e0e0e0; vertical-align: middle; }
+.pill.growing { background: #c8e6c9; }
+.pill.transplanted { background: #bbdefb; }

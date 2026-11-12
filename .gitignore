@@ -40,3 +40,11 @@ venv/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Node / web app
+node_modules/
+dist/
+software/server/data/
+
+# Arduino local secrets (copy secrets.example.h -> secrets.h)
+secrets.h

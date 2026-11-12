@@ -1,0 +1,26 @@
+{
+  "name": "pech-eye-web",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:api": "node --watch --env-file=.env.local dev-server.js",
+    "simulate": "node --env-file=.env.local scripts/simulate.js",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "@vercel/functions": "^1.5.0",
+    "express": "^4.21.0",
+    "jpeg-js": "^0.4.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.13.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.3",
+    "vite": "^5.4.10"
+  }
+}
