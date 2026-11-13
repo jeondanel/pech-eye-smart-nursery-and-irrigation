@@ -21,6 +21,8 @@ export const api = {
   readings: (batch) => req(`/api/readings${batch ? `?batch=${batch}` : ""}`),
   images: (batch) => req(`/api/images${batch ? `?batch=${batch}` : ""}`),
   batches: () => req("/api/batches"),
+  requestPhoto: () => post("/api/camera/capture"),
+  cancelPhoto: () => post("/api/camera/cancel"),
   analyze: (id) => post(`/api/images/${id}/analyze`),
   transplant: (id, notes) => post(`/api/batches/${id}/transplant`, { notes }),
   newBatch: (name) => post("/api/batches", { name }),

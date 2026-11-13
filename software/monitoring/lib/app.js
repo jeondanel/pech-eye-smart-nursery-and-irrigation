@@ -60,6 +60,13 @@ app.post("/api/ingest/image", deviceAuth, h(async (req, res) => {
   const up = await sb.storage.from(BUCKET).upload(file, buf, { contentType: "image/jpeg" });
   if (up.error) throw new Error(up.error.message);
   const row = ok(await sb.from("images").insert({ batch_id: batch.id, ts, file }).select().single());
+  // Any new photo satisfies a pending "take a photo now" request from the dashboard.
+  // Errors are only logged so a missing table never loses an upload.
+  const [cr, cs] = await Promise.all([
+    sb.from("capture_requests").update({ fulfilled_at: ts, image_id: row.id }).is("fulfilled_at", null),
+    sb.from("camera_status").upsert({ id: 1, last_seen: ts }),
+  ]);
+  if (cr.error || cs.error) console.error("camera tables:", (cr.error || cs.error).message);
   res.json({ ok: true, id: row.id });
 
   // Runs after the response; waitUntil keeps the serverless function alive for it.
@@ -77,6 +84,15 @@ app.post("/api/ingest/image", deviceAuth, h(async (req, res) => {
     }
     await sendPhoto(buf, caption).catch((e) => console.error("telegram failed:", e.message));
   })());
+}));
+
+// The camera wakes every few minutes and asks whether the dashboard requested a photo.
+// ?every=<seconds> tells us its check-in interval so the dashboard can show the expected wait.
+app.get("/api/ingest/camera/poll", deviceAuth, h(async (req, res) => {
+  const every = num(req.query.every);
+  ok(await sb.from("camera_status").upsert({ id: 1, last_seen: new Date().toISOString(), ...(every ? { check_seconds: every } : {}) }));
+  const pending = ok(await sb.from("capture_requests").select("id").is("fulfilled_at", null).limit(1));
+  res.json({ capture: pending.length > 0 });
 }));
 
 // JSON {soil_moisture, humidity, temperature, distance_cm, reservoir_low}; every field optional.
@@ -105,15 +121,39 @@ app.post("/api/images/:id/analyze", h(async (req, res) => {
   res.json(withUrl(ok(await sb.from("images").select("*").eq("id", row.id).single())));
 }));
 
+async function cameraState() {
+  const [st, pending] = await Promise.all([
+    sb.from("camera_status").select("*").eq("id", 1).maybeSingle(),
+    sb.from("capture_requests").select("*").is("fulfilled_at", null).order("requested_at").limit(1),
+  ]);
+  const s = ok(st);
+  return { lastSeen: s?.last_seen || null, checkSeconds: s?.check_seconds || null, pending: ok(pending)[0] || null };
+}
+
+app.get("/api/camera", h(async (_req, res) => res.json(await cameraState())));
+
+// "Take a photo now": queue a request; the camera picks it up on its next check-in.
+app.post("/api/camera/capture", h(async (_req, res) => {
+  const st = await cameraState();
+  if (!st.pending) ok(await sb.from("capture_requests").insert({}));
+  res.json(await cameraState());
+}));
+
+app.post("/api/camera/cancel", h(async (_req, res) => {
+  ok(await sb.from("capture_requests").delete().is("fulfilled_at", null));
+  res.json(await cameraState());
+}));
+
 app.get("/api/dashboard", h(async (req, res) => {
   const batch = req.query.batch
     ? ok(await sb.from("batches").select("*").eq("id", req.query.batch).single())
     : await activeBatch();
-  const [lr, recent, cnt, weather] = await Promise.all([
+  const [lr, recent, cnt, weather, camera] = await Promise.all([
     sb.from("readings").select("*").eq("batch_id", batch.id).order("ts", { ascending: false }).limit(1),
     sb.from("images").select("*").eq("batch_id", batch.id).order("ts", { ascending: false }).limit(12),
     sb.from("images").select("id", { count: "exact", head: true }).eq("batch_id", batch.id),
     batch.status === "growing" ? ensureWeather() : null,
+    batch.status === "growing" ? cameraState().catch(() => null) : null, // null if the camera tables aren't created yet
   ]);
   const recentImages = ok(recent).map(withUrl);
   res.json({
@@ -124,6 +164,7 @@ app.get("/api/dashboard", h(async (req, res) => {
     latestAnalyzed: recentImages.find((i) => i.analysis) || null,
     imageCount: cnt.count || 0,
     weather,
+    camera,
   });
 }));
 
@@ -134,10 +175,13 @@ app.get("/api/readings", h(async (req, res) => {
   res.json(rows.filter((_, i) => i % step === 0));
 }));
 
+// Every photo of a batch (newest first) for the Photos gallery.
 app.get("/api/images", h(async (req, res) => {
-  const id = req.query.batch || (await activeBatch()).id;
-  const rows = ok(await sb.from("images").select("*").eq("batch_id", id).order("ts", { ascending: false }).limit(100));
-  res.json(rows.map(withUrl));
+  const batch = req.query.batch
+    ? ok(await sb.from("batches").select("*").eq("id", req.query.batch).single())
+    : await activeBatch();
+  const rows = await fetchAll((a, b) => sb.from("images").select("*").eq("batch_id", batch.id).order("ts", { ascending: false }).range(a, b));
+  res.json({ batch, images: rows.map(withUrl) });
 }));
 
 app.get("/api/batches", h(async (_req, res) => {

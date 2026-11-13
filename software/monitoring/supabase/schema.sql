@@ -76,4 +76,20 @@ language sql stable as $$
   from weather where ts between p_from and p_to;
 $$;
 
+-- ---------- Remote "take a photo now" (dashboard -> camera) ----------
+-- Already ran this file before? Run just this section in a new query.
+create table if not exists capture_requests (
+  id bigint generated always as identity primary key,
+  requested_at timestamptz not null default now(),
+  fulfilled_at timestamptz,                      -- set when the next photo arrives
+  image_id bigint references images(id) on delete set null
+);
+create table if not exists camera_status (
+  id int primary key default 1 check (id = 1),   -- single row
+  last_seen timestamptz,                         -- last check-in or upload from the camera
+  check_seconds int                              -- how often the camera checks in
+);
+alter table capture_requests enable row level security;
+alter table camera_status    enable row level security;
+
 -- Then: Storage -> New bucket -> name: tray-images -> tick "Public bucket" -> Create.

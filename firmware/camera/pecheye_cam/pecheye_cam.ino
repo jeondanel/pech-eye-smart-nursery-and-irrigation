@@ -19,6 +19,13 @@
  *      No resistor needed (internal pull-up). Set WAKE_BUTTON_PIN to -1 to disable.
  *   3. Power-on or the on-board RST button: always captures once right away.
  *      -> For quick manual tests with no wiring, just press RST.
+ *   4. Dashboard "Take photo" button: the board briefly wakes every
+ *      CHECK_INTERVAL_MINUTES, connects to Wi-Fi and asks the server
+ *      (GET /api/ingest/camera/poll) whether a photo was requested. The camera
+ *      itself is only powered up when the answer is yes. Set it to 0 to disable.
+ *
+ * Manual / dashboard photos don't shift the 12 h schedule. The schedule is kept in
+ * RTC memory, which survives deep sleep (but resets on power-on / RST).
  *
  * TESTING TIP: to capture every 30 s instead of 12 h, set TEST_INTERVAL_SECONDS
  * below to 30, re-flash, and set it back to 0 when done.
@@ -48,6 +55,9 @@ const char* API_KEY     = SECRET_API_KEY;
 const uint32_t CAPTURE_INTERVAL_HOURS = 12;   // normal schedule: one photo every 12 h
 const uint32_t TEST_INTERVAL_SECONDS  = 0;    // TESTING: e.g. 30 = photo every 30 s. 0 = use the 12 h schedule
 const uint32_t RETRY_MINUTES          = 15;   // if Wi-Fi/upload fails, try again this soon instead of waiting 12 h
+// Dashboard "Take photo" check-in. Shorter = photo arrives sooner, but more battery
+// (each check-in is ~3-8 s of Wi-Fi). 0 = never check in (button/timer only).
+const uint32_t CHECK_INTERVAL_MINUTES = 5;
 
 // Manual capture button: wire a push button from this pin to GND.
 // Must be an RTC-capable GPIO (0-21 on ESP32-S3) that the camera doesn't use.
@@ -163,6 +173,23 @@ bool postJson(const String& json) {
   return code == 200;
 }
 
+// Asks the server whether someone pressed "Take photo" on the dashboard.
+bool photoRequested() {
+  String url = String(SERVER_URL) + "/api/ingest/camera/poll?every=" + String(CHECK_INTERVAL_MINUTES * 60);
+  WiFiClient plain;
+  WiFiClientSecure secure;
+  secure.setInsecure();
+  HTTPClient http;
+  http.setTimeout(10000);
+  if (url.startsWith("https://")) http.begin(secure, url); else http.begin(plain, url);
+  http.addHeader("x-api-key", API_KEY);
+  int code = http.GET();
+  String body = code == 200 ? http.getString() : "";
+  http.end();
+  Serial.printf("Check-in -> HTTP %d %s\n", code, body.c_str());
+  return body.indexOf("\"capture\":true") >= 0;
+}
+
 // ---- Sensors (tentative: not connected yet) ----
 // Fill these in when hardware arrives. Only send the fields you actually have.
 //  Soil moisture: analogRead(pin) mapped to 0-100 %  (calibrate dry/wet values)
@@ -223,31 +250,62 @@ void goToSleep(uint64_t seconds) {
   esp_deep_sleep_start();   // never returns; the board restarts into setup() on wake
 }
 
+// When the next scheduled photo is due, in seconds of the ESP32's RTC clock.
+// RTC_DATA_ATTR keeps it through deep sleep; the RTC clock keeps counting while asleep.
+RTC_DATA_ATTR int64_t nextCaptureAt = 0;
+RTC_DATA_ATTR bool scheduleSet = false;
+
+int64_t nowSec() {
+  struct timeval tv;
+  gettimeofday(&tv, nullptr);
+  return tv.tv_sec;
+}
+
+bool takePhoto() {
+  if (!initCamera()) return false;
+  connectWifi();
+  if (WiFi.status() != WL_CONNECTED) return false;
+  readAndSendSensors();
+  return captureAndSend();
+}
+
 void setup() {
   Serial.begin(115200);
   delay(500);
 
-  switch (esp_sleep_get_wakeup_cause()) {
-    case ESP_SLEEP_WAKEUP_TIMER: Serial.println("\nWake: scheduled capture"); break;
-    case ESP_SLEEP_WAKEUP_EXT0:  Serial.println("\nWake: manual button");      break;
-    default:                     Serial.println("\nWake: power-on / RST");     break;
-  }
-
-  uint64_t sleepSeconds = TEST_INTERVAL_SECONDS > 0
+  const uint64_t interval = TEST_INTERVAL_SECONDS > 0
       ? TEST_INTERVAL_SECONDS
       : (uint64_t)CAPTURE_INTERVAL_HOURS * 3600ULL;
+  esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+  bool button  = cause == ESP_SLEEP_WAKEUP_EXT0;
+  bool powerOn = cause != ESP_SLEEP_WAKEUP_TIMER && !button;   // power-on or RST
+  bool due     = cause == ESP_SLEEP_WAKEUP_TIMER && (!scheduleSet || nowSec() + 30 >= nextCaptureAt);
 
   bool ok = false;
-  if (initCamera()) {
+  if (button) {
+    Serial.println("\nWake: manual button");   // extra photo; the 12 h schedule is unchanged
+    ok = takePhoto();
+  } else if (powerOn || due) {
+    Serial.println(powerOn ? "\nWake: power-on / RST" : "\nWake: scheduled capture");
+    ok = takePhoto();
+    // Failed (camera, Wi-Fi or upload)? Retry soon rather than losing a whole 12 h slot.
+    nextCaptureAt = nowSec() + (int64_t)((!ok && TEST_INTERVAL_SECONDS == 0) ? RETRY_MINUTES * 60ULL : interval);
+    scheduleSet = true;
+  } else {
+    Serial.println("\nWake: dashboard check-in");
     connectWifi();
-    if (WiFi.status() == WL_CONNECTED) {
-      readAndSendSensors();
-      ok = captureAndSend();
+    if (WiFi.status() == WL_CONNECTED && photoRequested()) {
+      Serial.println("Photo requested from the dashboard");
+      ok = takePhoto();   // if this fails the request stays pending and is retried next check-in
     }
   }
-  // Failed (camera, Wi-Fi or upload)? Retry soon rather than losing a whole 12 h slot.
-  if (!ok && TEST_INTERVAL_SECONDS == 0) sleepSeconds = (uint64_t)RETRY_MINUTES * 60ULL;
 
+  // Sleep until the next scheduled photo, but wake earlier for the dashboard check-in.
+  int64_t untilCapture = nextCaptureAt - nowSec();
+  if (untilCapture < 10) untilCapture = 10;
+  uint64_t sleepSeconds = untilCapture;
+  if (CHECK_INTERVAL_MINUTES > 0 && sleepSeconds > CHECK_INTERVAL_MINUTES * 60ULL)
+    sleepSeconds = CHECK_INTERVAL_MINUTES * 60ULL;
   goToSleep(sleepSeconds);
 }
 

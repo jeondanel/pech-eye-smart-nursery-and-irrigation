@@ -11,6 +11,29 @@ const ago = (iso) => {
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return `${Math.floor(s / 86400)} d ago`;
 };
+const clockTime = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+const longDate = (d) => new Date(d).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+const every = (s) => (s >= 3600 ? `${+(s / 3600).toFixed(1)} h` : s >= 60 ? `${Math.round(s / 60)} min` : `${s} s`);
+
+// Calendar days since the batch started (local time): the start date is Day 1, the next date Day 2, ...
+const midnight = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+const dayOf = (start, at = Date.now()) => Math.max(1, Math.round((midnight(at) - midnight(start)) / 86400000) + 1);
+
+function useNow(ms = 1000) {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => { const t = setInterval(() => setNow(new Date()), ms); return () => clearInterval(t); }, [ms]);
+  return now;
+}
+
+function Clock() {
+  const now = useNow(1000);
+  return (
+    <div className="clock" aria-live="off">
+      <b>{now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}</b>
+      <small>{now.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</small>
+    </div>
+  );
+}
 
 function usePoll(fn, deps, ms = 10000) {
   const [state, set] = useState({ data: null, error: null });
@@ -34,6 +57,7 @@ function Stat({ label, value, sub, tone }) {
 const Icon = {
   dash: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" /><rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" /></svg>,
   batch: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22V12" /><path d="M12 12C12 7 8 4 3 4c0 5 3 8 9 8Z" /><path d="M12 14c0-4 3-7 9-7 0 5-3 8-9 8" /></svg>,
+  photos: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" /></svg>,
 };
 
 function Login({ wrong, onSubmit }) {
@@ -111,6 +135,36 @@ function Charts({ batch }) {
   );
 }
 
+/* ---------- remote camera trigger ---------- */
+
+function CameraControl({ camera, onChange }) {
+  useNow(15000); // keep the "x min ago" text fresh between polls
+  const [busy, setBusy] = useState(false);
+  if (!camera) return null;
+  const { pending, lastSeen, checkSeconds } = camera;
+  const offline = lastSeen && checkSeconds && Date.now() - new Date(lastSeen) > checkSeconds * 3000 + 120000;
+  const act = async (fn) => { setBusy(true); try { await fn(); onChange(); } catch (e) { alert(e.message); } setBusy(false); };
+
+  return (
+    <div className="card camctl">
+      <div>
+        <b>{pending ? "📷 Photo requested" : "📷 Take a photo now"}</b>
+        <span className="muted">
+          {pending
+            ? <>Requested {ago(pending.requested_at)}. The camera takes it on its next check-in{checkSeconds ? <> (every {every(checkSeconds)})</> : null}; the photo appears here automatically.</>
+            : <>The camera checks in{checkSeconds ? <> every {every(checkSeconds)}</> : " regularly"} and takes the photo then.</>}
+        </span>
+        <span className={`muted small ${offline ? "warn-t" : ""}`}>
+          {lastSeen ? <>Camera last checked in {ago(lastSeen)}{offline ? " - it may be offline or out of power." : "."}</> : "The camera hasn't checked in yet. Flash the updated firmware."}
+        </span>
+      </div>
+      {pending
+        ? <button className="btn ghost" disabled={busy} onClick={() => act(api.cancelPhoto)}>Cancel request</button>
+        : <button className="btn" disabled={busy} onClick={() => act(api.requestPhoto)}>{busy ? "Requesting…" : "Take photo"}</button>}
+    </div>
+  );
+}
+
 /* ---------- dashboard ---------- */
 
 // Same rules as the sensor node's decision engine (firmware evaluateIrrigationDecision)
@@ -123,7 +177,7 @@ function irrigationDecision(w, r) {
   return { tone: "ok", icon: "✅", title: "Irrigation permitted", text: "Clear weather. Normal irrigation schedule allowed." };
 }
 
-function Dashboard({ batchId }) {
+function Dashboard({ batchId, onPhotos }) {
   const { data, error, reload } = usePoll(() => api.dashboard(batchId), [batchId]);
   const [selected, setSelected] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -158,11 +212,12 @@ function Dashboard({ batchId }) {
     <>
       <div className="card hero">
         <div>
-          <p className="muted">Current batch</p>
-          <h2>{batch.name}</h2>
+          <p className="muted">{batch.status === "growing" ? "Current batch" : "Batch"}</p>
+          <h2>{batch.name} <span className="day">Day {dayOf(batch.started_at, batch.ended_at || Date.now())}</span></h2>
+          <p className="muted">Started {longDate(batch.started_at)}{batch.ended_at && ` · transplanted ${longDate(batch.ended_at)}`}</p>
         </div>
         <div className="chips">
-          <span className={`chip ${batch.status === "growing" ? "" : "info"}`}>{batch.status === "growing" ? `Day ${data.daysGrowing.toFixed(1)}` : "Transplanted"}</span>
+          {batch.status !== "growing" && <span className="chip info">Transplanted</span>}
           {r
             ? <span className={`chip ${live ? "live" : "warn"}`}><i className="dot" />{live ? "Sensors live" : "Sensors offline"} · {ago(r.ts)}</span>
             : <span className="chip grey"><i className="dot" />No sensor data</span>}
@@ -206,19 +261,24 @@ function Dashboard({ batchId }) {
         <Stat label="Photos" value={data.imageCount} />
       </div>
 
+      <CameraControl camera={data.camera} onChange={reload} />
+
       <div className="two">
         <div className="card">
-          <h3>Recent pictures</h3>
+          <div className="row head">
+            <h3>Recent pictures</h3>
+            {data.imageCount > 0 && <button className="link" onClick={() => onPhotos(batch.id)}>View all {data.imageCount} →</button>}
+          </div>
           {recentImages.length === 0 ? <div className="empty"><b>📷</b>No pictures yet. Photos appear here once the camera node uploads.</div> : (
             <div className="thumbs">
               {recentImages.map((im) => (
-                <img key={im.id} src={im.url} loading="lazy" alt={`Tray photo ${when(im.ts)}`} title={when(im.ts)} className={shown?.id === im.id ? "sel" : ""} onClick={() => setSelected(im)} />
+                <img key={im.id} src={im.url} loading="lazy" alt={`Tray photo, Day ${dayOf(batch.started_at, im.ts)}, ${when(im.ts)}`} title={`Day ${dayOf(batch.started_at, im.ts)} · ${when(im.ts)}`} className={shown?.id === im.id ? "sel" : ""} onClick={() => setSelected(im)} />
               ))}
             </div>
           )}
         </div>
         <div className="card">
-          <h3>Tray analysis {shown && <small className="muted">· {when(shown.ts)}</small>}</h3>
+          <h3>Tray analysis {shown && <small className="muted">· Day {dayOf(batch.started_at, shown.ts)} · {when(shown.ts)}</small>}</h3>
           {!shown && <div className="empty"><b>🌿</b>Analysis shows up after the first photo.</div>}
           {shown && <img src={shown.url} className="big" alt="Selected tray" />}
           {shown && <button className="btn ghost block" onClick={analyze} disabled={busy}>{busy ? "Analyzing…" : a ? "Re-analyze" : "Analyze this photo"}</button>}
@@ -241,9 +301,99 @@ function Dashboard({ batchId }) {
   );
 }
 
+/* ---------- photo gallery ---------- */
+
+function Lightbox({ images, index, start, onIndex, onClose }) {
+  const im = images[index];
+  useEffect(() => {
+    const k = (e) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowLeft" && index < images.length - 1) onIndex(index + 1); // older
+      if (e.key === "ArrowRight" && index > 0) onIndex(index - 1);                // newer
+    };
+    window.addEventListener("keydown", k);
+    document.body.style.overflow = "hidden";
+    return () => { window.removeEventListener("keydown", k); document.body.style.overflow = ""; };
+  }, [index, images.length, onClose, onIndex]);
+  if (!im) return null;
+  return (
+    <div className="lightbox" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="lb-in" onClick={(e) => e.stopPropagation()}>
+        <div className="lb-top">
+          <div><b>Day {dayOf(start, im.ts)}</b> · {longDate(im.ts)}, {clockTime(im.ts)}</div>
+          <button className="lb-x" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <img src={im.url} alt={`Tray photo, Day ${dayOf(start, im.ts)}`} />
+        <div className="lb-bot">
+          <button className="btn ghost" disabled={index >= images.length - 1} onClick={() => onIndex(index + 1)}>← Older</button>
+          <span className="muted">
+            {im.analysis ? `${im.ready_cells}/${im.occupied_cells} ready${im.ready ? " ✅" : ""}` : "not analyzed"} · {images.length - index} of {images.length}
+            {" · "}<a href={im.url} target="_blank" rel="noreferrer">Full size</a>
+          </span>
+          <button className="btn ghost" disabled={index <= 0} onClick={() => onIndex(index - 1)}>Newer →</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Photos({ initialBatch }) {
+  const [batchId, setBatchId] = useState(initialBatch || "");
+  const [open, setOpen] = useState(null);
+  const batches = usePoll(() => api.batches(), [], 60000);
+  const { data, error } = usePoll(() => api.images(batchId || undefined), [batchId], 20000);
+  const close = useCallback(() => setOpen(null), []);
+
+  if (error && !data) return <div className="card empty"><b>⚠️</b>Cannot load photos ({error.message}).</div>;
+
+  const images = data?.images || [];
+  const start = data?.batch.started_at;
+  const groups = [];
+  images.forEach((im, i) => {
+    const d = dayOf(start, im.ts);
+    if (!groups.length || groups[groups.length - 1].day !== d) groups.push({ day: d, ts: im.ts, items: [] });
+    groups[groups.length - 1].items.push({ im, i });
+  });
+
+  return (
+    <>
+      <div className="row">
+        <div>
+          <h2>Photos</h2>
+          {data && <p className="muted">{data.batch.name} · {images.length} photo{images.length === 1 ? "" : "s"} · started {longDate(start)}</p>}
+        </div>
+        {batches.data?.length > 1 && (
+          <select className="select" value={batchId} onChange={(e) => { setBatchId(e.target.value); setOpen(null); }} aria-label="Batch">
+            <option value="">Current batch</option>
+            {batches.data.map((b) => <option key={b.id} value={b.id}>{b.name} ({b.status})</option>)}
+          </select>
+        )}
+      </div>
+
+      {!data ? <div className="skel" style={{ height: 240 }} />
+        : images.length === 0 ? <div className="card empty"><b>📷</b>No photos for this batch yet.</div>
+        : groups.map((g) => (
+          <section key={g.day}>
+            <div className="sec-title day-title">Day {g.day} <span>· {longDate(g.ts)} · {g.items.length} photo{g.items.length === 1 ? "" : "s"}</span></div>
+            <div className="gallery">
+              {g.items.map(({ im, i }) => (
+                <button key={im.id} className="shot" onClick={() => setOpen(i)}>
+                  <img src={im.url} loading="lazy" alt={`Tray photo, Day ${g.day}, ${clockTime(im.ts)}`} />
+                  <span className="cap">{clockTime(im.ts)}{im.ready ? " · ✅" : ""}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        ))}
+
+      {open !== null && <Lightbox images={images} index={open} start={start} onIndex={setOpen} onClose={close} />}
+    </>
+  );
+}
+
 /* ---------- batches ---------- */
 
-function Batches({ onOpen }) {
+function Batches({ onOpen, onPhotos }) {
   const { data, reload } = usePoll(() => api.batches(), [], 15000);
   if (!data) return <><div className="skel" /><div className="skel" /></>;
   const growing = data.find((b) => b.status === "growing");
@@ -264,10 +414,11 @@ function Batches({ onOpen }) {
           <div className="row">
             <div>
               <h3 style={{ marginBottom: 2 }}>{b.name} <span className={`pill ${b.status}`}>{b.status}</span></h3>
-              <p className="muted">Started {when(b.started_at)}{b.ended_at && ` · Ended ${when(b.ended_at)}`}</p>
+              <p className="muted">Started {when(b.started_at)}{b.ended_at && ` · Ended ${when(b.ended_at)}`} · {b.status === "growing" ? "now on" : "lasted to"} Day {dayOf(b.started_at, b.ended_at || Date.now())}</p>
             </div>
             <div className="batch-actions">
               <button className="btn ghost" onClick={() => onOpen(b.id)}>View dashboard</button>
+              <button className="btn ghost" onClick={() => onPhotos(b.id)}>Photos</button>
               {b.status === "growing" && <button className="btn" onClick={() => transplant(b)}>Mark as transplanted</button>}
             </div>
           </div>
@@ -303,7 +454,7 @@ export default function App() {
   }, []);
 
   const login = (p) => { setPw(p); setAuth(null); setEpoch((n) => n + 1); };
-  const go = (t) => { setTab(t); if (t === "dashboard") setBatchId(null); window.scrollTo({ top: 0 }); };
+  const go = (t, id = null) => { setTab(t); setBatchId(id); window.scrollTo({ top: 0 }); };
 
   return (
     <>
@@ -316,15 +467,18 @@ export default function App() {
           {!auth && (
             <nav className="tabs">
               <button className={tab === "dashboard" ? "on" : ""} onClick={() => go("dashboard")}>{Icon.dash}Dashboard</button>
+              <button className={tab === "photos" ? "on" : ""} onClick={() => go("photos")}>{Icon.photos}Photos</button>
               <button className={tab === "batches" ? "on" : ""} onClick={() => go("batches")}>{Icon.batch}Batches</button>
             </nav>
           )}
+          <Clock />
         </div>
       </header>
       <main className="page" key={epoch}>
         {auth ? <Login wrong={auth.wrong} onSubmit={login} />
-          : tab === "dashboard" ? <Dashboard batchId={batchId} key={batchId} />
-          : <Batches onOpen={(id) => { setBatchId(id); setTab("dashboard"); }} />}
+          : tab === "dashboard" ? <Dashboard batchId={batchId} key={batchId} onPhotos={(id) => go("photos", id)} />
+          : tab === "photos" ? <Photos initialBatch={batchId} key={batchId} />
+          : <Batches onOpen={(id) => go("dashboard", id)} onPhotos={(id) => go("photos", id)} />}
       </main>
     </>
   );
