@@ -55,9 +55,10 @@ a { color: inherit; text-decoration: none; }
 .brand h1 { font-size: 1.3rem; font-weight: 600; line-height: 1.05; }
 .brand small { display: block; font-size: .62rem; font-weight: 400; opacity: .85; }
 .logo { border-radius: 50%; background: var(--deep); display: grid; place-items: center; overflow: hidden; flex: none; box-shadow: 0 0 0 2px rgba(255,255,255,.15); color: var(--pale); }
-.logo:has(img) { background: #fff; }
-/* logo.png has wide transparent padding around the eye, so zoom in to fill the circle */
-.logo img { width: 100%; height: 100%; object-fit: contain; transform: scale(1.75); }
+/* Your own logo: shown as-is on a transparent background (no circle). */
+.logo:has(img) { background: none; box-shadow: none; border-radius: 0; }
+/* logo.png has wide transparent padding around the eye, so zoom in to fill the box */
+.logo img { width: 100%; height: 100%; object-fit: contain; transform: scale(1.9); }
 
 .tabs { display: flex; gap: 4px; }
 .tabs a { display: flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; font-size: .88rem; opacity: .7; }
