@@ -50,10 +50,7 @@ export default function App() {
               ))}
             </nav>
           )}
-          <div className="top-right">
-            <ThemeToggle />
-            <Clock />
-          </div>
+          <Clock />
         </div>
       </header>
       <main className={`page ${record ? "no-nav" : ""}`}>
@@ -64,6 +61,7 @@ export default function App() {
           : page === "sensors" ? <SensorHistory kind={sub} key={sub} />
           : <Dashboard />}
       </main>
+      <ThemeToggle />
     </>
   );
 }

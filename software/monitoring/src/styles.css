@@ -101,11 +101,14 @@ a { color: inherit; text-decoration: none; }
 @media (min-width: 720px) { body { padding-bottom: 40px; } }
 .page.no-nav { padding-bottom: 40px; }
 
-.top-right { display: flex; align-items: center; gap: 14px; }
-/* Plain icon like the nav items, sitting left of the clock */
-.theme-btn { width: 34px; height: 34px; border-radius: 999px; border: 0; background: transparent; color: inherit; display: grid; place-items: center; cursor: pointer; opacity: .7; flex: none; }
-.theme-btn:hover { opacity: 1; background: var(--top-on); }
-.theme-btn .ms { font-size: 20px; }
+/* Floating round button in the bottom-right corner (like a chat widget). */
+.theme-btn { position: fixed; right: 20px; bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 40;
+  width: 54px; height: 54px; border-radius: 50%; border: 0; background: var(--brand); color: #fff;
+  display: grid; place-items: center; cursor: pointer; box-shadow: 0 6px 18px rgba(0, 0, 0, .25); transition: transform .15s, background .15s; }
+.theme-btn:hover { transform: translateY(-2px); background: var(--accent); }
+.theme-btn .ms { font-size: 26px; }
+/* On phones the nav bar sits at the bottom, so float above it. */
+@media (max-width: 719px) { .theme-btn { right: 16px; bottom: calc(84px + env(safe-area-inset-bottom)); width: 50px; height: 50px; } }
 .clock { text-align: right; font-variant-numeric: tabular-nums; line-height: 1.1; white-space: nowrap; }
 .clock b { display: block; font-size: 1.25rem; font-weight: 600; }
 .clock small { font-size: .62rem; opacity: .85; }
