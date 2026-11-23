@@ -101,8 +101,9 @@ a { color: inherit; text-decoration: none; }
 @media (min-width: 720px) { body { padding-bottom: 40px; } }
 .page.no-nav { padding-bottom: 40px; }
 
-.top-right { display: flex; align-items: center; gap: 10px; }
-.theme-btn { width: 38px; height: 38px; border-radius: 50%; border: 1.5px solid currentColor; background: transparent; color: inherit; display: grid; place-items: center; cursor: pointer; opacity: .85; flex: none; }
+.top-right { display: flex; align-items: center; gap: 14px; }
+/* Plain icon like the nav items, sitting left of the clock */
+.theme-btn { width: 34px; height: 34px; border-radius: 999px; border: 0; background: transparent; color: inherit; display: grid; place-items: center; cursor: pointer; opacity: .7; flex: none; }
 .theme-btn:hover { opacity: 1; background: var(--top-on); }
 .theme-btn .ms { font-size: 20px; }
 .clock { text-align: right; font-variant-numeric: tabular-nums; line-height: 1.1; white-space: nowrap; }

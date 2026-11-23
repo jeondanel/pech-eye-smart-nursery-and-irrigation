@@ -51,8 +51,8 @@ export default function App() {
             </nav>
           )}
           <div className="top-right">
-            <Clock />
             <ThemeToggle />
+            <Clock />
           </div>
         </div>
       </header>
