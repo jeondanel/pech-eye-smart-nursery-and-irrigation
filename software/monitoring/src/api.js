@@ -15,11 +15,13 @@ async function req(url, opts = {}) {
 }
 const post = (url, body) =>
   req(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) });
+const q = (batch) => (batch ? `?batch=${batch}` : "");
 
 export const api = {
-  dashboard: (batch) => req(`/api/dashboard${batch ? `?batch=${batch}` : ""}`),
-  readings: (batch) => req(`/api/readings${batch ? `?batch=${batch}` : ""}`),
-  images: (batch) => req(`/api/images${batch ? `?batch=${batch}` : ""}`),
+  dashboard: (batch) => req(`/api/dashboard${q(batch)}`),
+  readings: (batch) => req(`/api/readings${q(batch)}`),
+  history: (days) => req(`/api/history?days=${days}`),
+  images: (batch) => req(`/api/images${q(batch)}`),
   batches: () => req("/api/batches"),
   requestPhoto: () => post("/api/camera/capture"),
   cancelPhoto: () => post("/api/camera/cancel"),

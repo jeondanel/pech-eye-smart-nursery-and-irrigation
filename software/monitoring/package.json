@@ -1,12 +1,11 @@
 {
   "name": "pech-eye-web",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "dev:api": "node --watch --env-file=.env.local dev-server.js",
-    "simulate": "node --env-file=.env.local scripts/simulate.js",
     "build": "vite build",
     "preview": "vite preview"
   },

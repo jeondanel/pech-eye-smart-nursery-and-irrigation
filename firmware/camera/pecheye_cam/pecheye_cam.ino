@@ -1,74 +1,36 @@
 /*
- * PECH-EYE camera node: ESP32-S3-CAM -> web server
+ * PECH-EYE camera node: GOOUUU ESP32-S3-CAM V1.5 + OV5640
  *
- * Board: GOOUUU ESP32-S3-CAM V1.5 (N16R8) + OV2640. Same camera pin map as Freenove ESP32-S3-CAM.
+ * Always on (no deep sleep):
+ *   - Live preview page on the LAN:  http://<camera-ip>/   and a single JPEG at /capture
+ *     (the controller's Telegram /camera command links here)
+ *   - Uploads a tray photo to the dashboard every CAPTURE_INTERVAL_HOURS, and once at boot
+ *   - Every CHECK_INTERVAL_MINUTES asks the dashboard whether someone pressed "Take photo"
  *
- * Build/flash from VS Code (arduino-cli), board on the CH340 "COM" USB-C port:
- *   arduino-cli compile --upload -p COM3 --fqbn "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,CDCOnBoot=default" firmware/camera/pecheye_cam
- * Arduino IDE equivalent: ESP32S3 Dev Module, OPI PSRAM, 16MB flash,
- *   "16M Flash (3MB APP/9.9MB FATFS)", USB CDC On Boot: Disabled (Enabled only if using the OTG port).
+ * Credentials live in secrets.h (copy secrets.example.h -> secrets.h).
  *
- * Flow (one photo per wake, then deep sleep):
- *   wake -> init camera -> Wi-Fi -> capture JPEG -> POST /api/ingest/image -> deep sleep
- * The server stores the photo and runs the ExG tray analysis.
- *
- * ---------------------------------------------------------------------------
- * WHEN DOES IT CAPTURE?  (any of these wakes the board and takes ONE photo)
- *   1. Timer: every CAPTURE_INTERVAL_HOURS (12 h).
- *   2. Manual button: push button between WAKE_BUTTON_PIN (GPIO14) and GND.
- *      No resistor needed (internal pull-up). Set WAKE_BUTTON_PIN to -1 to disable.
- *   3. Power-on or the on-board RST button: always captures once right away.
- *      -> For quick manual tests with no wiring, just press RST.
- *   4. Dashboard "Take photo" button: the board briefly wakes every
- *      CHECK_INTERVAL_MINUTES, connects to Wi-Fi and asks the server
- *      (GET /api/ingest/camera/poll) whether a photo was requested. The camera
- *      itself is only powered up when the answer is yes. Set it to 0 to disable.
- *
- * Manual / dashboard photos don't shift the 12 h schedule. The schedule is kept in
- * RTC memory, which survives deep sleep (but resets on power-on / RST).
- *
- * TESTING TIP: to capture every 30 s instead of 12 h, set TEST_INTERVAL_SECONDS
- * below to 30, re-flash, and set it back to 0 when done.
- *
- * Notes:
- *  - Deep sleep resets the chip, so all the work happens in setup(); loop() never runs.
- *  - The sleep timer runs on the ESP32's internal RC clock, which can drift a few %
- *    (12 h may land ~10-30 min early/late). Fine for a tray photo.
- *  - Serial Monitor goes quiet while it sleeps - that's normal.
- * ---------------------------------------------------------------------------
+ * Arduino IDE: ESP32S3 Dev Module, PSRAM: OPI PSRAM, Flash 16MB,
+ *   Partition "16M Flash (3MB APP/9.9MB FATFS)", USB CDC On Boot: Disabled.
  */
 #include <WiFi.h>
-#include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <WebServer.h>
 #include "esp_camera.h"
-#include "esp_sleep.h"
-#include "driver/rtc_io.h"
 #include "secrets.h"
 
-// ---- EDIT THESE ----
-// Wi-Fi, server URL and API key live in secrets.h (copy secrets.example.h -> secrets.h)
-const char* WIFI_SSID   = SECRET_WIFI_SSID;
-const char* WIFI_PASS   = SECRET_WIFI_PASS;
-const char* SERVER_URL  = SECRET_SERVER_URL;
-const char* API_KEY     = SECRET_API_KEY;
+// ---- SETTINGS ----
+const uint32_t CAPTURE_INTERVAL_HOURS = 12;  // scheduled dashboard photo
+const uint32_t CHECK_INTERVAL_MINUTES = 1;   // how often to ask for "Take photo" requests (0 = never)
+const uint32_t RETRY_MINUTES          = 15;  // failed upload? try again this soon
+// ------------------
 
-const uint32_t CAPTURE_INTERVAL_HOURS = 12;   // normal schedule: one photo every 12 h
-const uint32_t TEST_INTERVAL_SECONDS  = 0;    // TESTING: e.g. 30 = photo every 30 s. 0 = use the 12 h schedule
-const uint32_t RETRY_MINUTES          = 15;   // if Wi-Fi/upload fails, try again this soon instead of waiting 12 h
-// Dashboard "Take photo" check-in. Shorter = photo arrives sooner, but more battery
-// (each check-in is ~3-8 s of Wi-Fi). 0 = never check in (button/timer only).
-const uint32_t CHECK_INTERVAL_MINUTES = 5;
+const char* WIFI_SSID  = SECRET_WIFI_SSID;
+const char* WIFI_PASS  = SECRET_WIFI_PASS;
+const char* SERVER_URL = SECRET_SERVER_URL;
+const char* API_KEY    = SECRET_API_KEY;
 
-// Manual capture button: wire a push button from this pin to GND.
-// Must be an RTC-capable GPIO (0-21 on ESP32-S3) that the camera doesn't use.
-// Free choices on this board: 1, 2, 14, 21. Not GPIO0 (BOOT): holding it during wake can enter flash mode.
-// Set to -1 to disable the button.
-#define WAKE_BUTTON_PIN 14
-// --------------------
-
-// Set to true once real sensors are wired (see readSensors() below).
-#define USE_SENSORS false
-
+// GOOUUU ESP32-S3-CAM V1.5
 #define PWDN_GPIO_NUM  -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM  15
@@ -86,6 +48,60 @@ const uint32_t CHECK_INTERVAL_MINUTES = 5;
 #define HREF_GPIO_NUM   7
 #define PCLK_GPIO_NUM  13
 
+WebServer server(80);
+bool cameraOk = false;
+uint32_t nextCaptureAt = 0;   // millis() of the next scheduled upload (0 = right away)
+uint32_t lastCheck = 0;
+uint32_t lastWifiAttempt = 0;
+
+const char webpage[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>PECH-EYE Camera</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { background: #111; color: white; text-align: center; font-family: Arial; margin: 20px; }
+    img { width: 100%; max-width: 1100px; height: auto; border: 2px solid #555; }
+    button, select { padding: 12px; margin: 8px; font-size: 15px; }
+  </style>
+</head>
+<body>
+  <h2>PECH-EYE OV5640 CAMERA</h2>
+  <p>Live image preview</p>
+  <img id="camera" src="/capture">
+  <br>
+  <button onclick="refreshImage()">Refresh Image</button>
+  <p>Auto-refresh interval</p>
+  <select id="interval" onchange="changeInterval()">
+    <option value="500">0.5 seconds</option>
+    <option value="1000" selected>1 second</option>
+    <option value="2000">2 seconds</option>
+    <option value="5000">5 seconds</option>
+  </select>
+  <p id="status">Camera ready</p>
+  <script>
+    let timer;
+    function refreshImage() {
+      const img = document.getElementById("camera");
+      const status = document.getElementById("status");
+      status.innerText = "Capturing image...";
+      img.onload = () => { status.innerText = "Image captured successfully"; };
+      img.onerror = () => { status.innerText = "Capture failed. Retrying..."; };
+      img.src = "/capture?t=" + Date.now();
+    }
+    function changeInterval() {
+      clearInterval(timer);
+      timer = setInterval(refreshImage, Number(document.getElementById("interval").value));
+    }
+    changeInterval();
+  </script>
+</body>
+</html>
+)rawliteral";
+
+// ---------- Camera ----------
+
 bool initCamera() {
   camera_config_t c = {};
   c.ledc_channel = LEDC_CHANNEL_0;
@@ -98,33 +114,44 @@ bool initCamera() {
   c.pin_pwdn = PWDN_GPIO_NUM; c.pin_reset = RESET_GPIO_NUM;
   c.xclk_freq_hz = 20000000;
   c.pixel_format = PIXFORMAT_JPEG;
-  c.frame_size   = FRAMESIZE_UXGA;      // 1600x1200: enough detail to see 72 holes
-  c.jpeg_quality = 10;                  // 0-63, lower = better quality
+  c.frame_size   = FRAMESIZE_QSXGA;   // OV5640 full 5 MP (2560x1920)
+  c.jpeg_quality = 10;                // 0-63, lower = better quality
   c.fb_count     = 2;
   c.fb_location  = CAMERA_FB_IN_PSRAM;
   c.grab_mode    = CAMERA_GRAB_LATEST;
   esp_err_t err = esp_camera_init(&c);
   if (err != ESP_OK) { Serial.printf("Camera init failed: 0x%x\n", err); return false; }
+  Serial.printf("Camera PID: 0x%04X\n", esp_camera_sensor_get()->id.PID);
   return true;
 }
 
-void connectWifi() {
-  if (WiFi.status() == WL_CONNECTED) return;
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);   // modem sleep stalls large uploads
+// ---------- Wi-Fi ----------
+
+void maintainWifi() {
+  if (WiFi.status() == WL_CONNECTED || millis() - lastWifiAttempt < 15000) return;
+  lastWifiAttempt = millis();
+  Serial.println("Reconnecting Wi-Fi...");
+  WiFi.disconnect();
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  // Full TX power garbles outgoing packets on many cheap S3 boards (and sags USB power):
-  // ~80% loss despite a strong signal. A lower TX power fixes it; the router is close anyway.
-  WiFi.setTxPower(WIFI_POWER_8_5dBm);
-  Serial.print("Wi-Fi");
-  for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) { delay(500); Serial.print("."); }
-  if (WiFi.status() == WL_CONNECTED) Serial.printf("%s  RSSI %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
-  else Serial.println(" FAILED");
 }
 
-// POSTs a JPEG by writing it in small chunks and retrying partial writes.
-// HTTPClient::POST(buf, len) aborts the whole upload on the first short write
-// (HTTP -3), which happens easily with ~150 KB photos over Wi-Fi.
+// ---------- Local web page ----------
+
+void handleRoot() { server.send_P(200, "text/html", webpage); }
+
+void handleCapture() {
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (!fb) { server.send(500, "text/plain", "Camera capture failed"); return; }
+  server.setContentLength(fb->len);
+  server.send(200, "image/jpeg", "");
+  server.client().write(fb->buf, fb->len);
+  esp_camera_fb_return(fb);
+}
+
+// ---------- Dashboard upload ----------
+
+// POSTs a JPEG in small chunks, retrying partial writes. HTTPClient::POST(buf, len)
+// aborts on the first short write, which happens easily with large photos over Wi-Fi.
 int postJpeg(const char* path, const uint8_t* buf, size_t len) {
   String url = SERVER_URL;
   bool tls = url.startsWith("https://");
@@ -138,7 +165,7 @@ int postJpeg(const char* path, const uint8_t* buf, size_t len) {
 
   WiFiClient plain;
   WiFiClientSecure secure;
-  secure.setInsecure();   // no CA pinning; fine for this project's Vercel endpoint
+  secure.setInsecure();
   Client& client = tls ? (Client&)secure : (Client&)plain;
   if (!client.connect(host.c_str(), port)) return -1;
 
@@ -163,13 +190,16 @@ int postJpeg(const char* path, const uint8_t* buf, size_t len) {
   return status.length() > 12 ? status.substring(9, 12).toInt() : -11;
 }
 
-bool postJson(const String& json) {
-  HTTPClient http;
-  http.begin(String(SERVER_URL) + "/api/ingest/reading");
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("x-api-key", API_KEY);
-  int code = http.POST(json);
-  http.end();
+bool uploadPhoto() {
+  if (!cameraOk || WiFi.status() != WL_CONNECTED) return false;
+  // Drop a stale buffered frame so the upload is a fresh picture.
+  camera_fb_t* old = esp_camera_fb_get();
+  if (old) esp_camera_fb_return(old);
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (!fb) { Serial.println("Capture failed"); return false; }
+  int code = postJpeg("/api/ingest/image", fb->buf, fb->len);
+  Serial.printf("Uploaded %u bytes -> HTTP %d\n", (unsigned)fb->len, code);
+  esp_camera_fb_return(fb);
   return code == 200;
 }
 
@@ -186,129 +216,57 @@ bool photoRequested() {
   int code = http.GET();
   String body = code == 200 ? http.getString() : "";
   http.end();
-  Serial.printf("Check-in -> HTTP %d %s\n", code, body.c_str());
+  if (code != 200) Serial.printf("Poll -> HTTP %d\n", code);
   return body.indexOf("\"capture\":true") >= 0;
 }
 
-// ---- Sensors (tentative: not connected yet) ----
-// Fill these in when hardware arrives. Only send the fields you actually have.
-//  Soil moisture: analogRead(pin) mapped to 0-100 %  (calibrate dry/wet values)
-//  Humidity/temp: DHT22/SHT31 library
-//  Ultrasonic (HC-SR04 / JSN-SR04T): trigger+echo -> distance in cm
-void readAndSendSensors() {
-#if USE_SENSORS
-  float soil = NAN, hum = NAN, temp = NAN, dist = NAN;
-  // soil = ...; hum = ...; temp = ...; dist = ...;
-  String j = "{";
-  if (!isnan(soil)) j += "\"soil_moisture\":" + String(soil, 1) + ",";
-  if (!isnan(hum))  j += "\"humidity\":" + String(hum, 1) + ",";
-  if (!isnan(temp)) j += "\"temperature\":" + String(temp, 1) + ",";
-  if (!isnan(dist)) j += "\"distance_cm\":" + String(dist, 1) + ",";
-  if (j.endsWith(",")) j.remove(j.length() - 1);
-  j += "}";
-  postJson(j);
-#endif
-}
-
-bool captureAndSend() {
-  // The camera was just powered up from deep sleep: let auto-exposure / white balance
-  // settle by throwing away a few frames, otherwise the photo comes out dark and green-tinted.
-  for (int i = 0; i < 5; i++) {
-    camera_fb_t* warm = esp_camera_fb_get();
-    if (warm) esp_camera_fb_return(warm);
-    delay(150);
-  }
-  camera_fb_t* fb = esp_camera_fb_get();
-  if (!fb) { Serial.println("Capture failed"); return false; }
-
-  int code = postJpeg("/api/ingest/image", fb->buf, fb->len);
-  Serial.printf("Uploaded %u bytes -> HTTP %d\n", (unsigned)fb->len, code);
-  esp_camera_fb_return(fb);
-  return code == 200;
-}
-
-void goToSleep(uint64_t seconds) {
-  Serial.printf("Sleeping %llu s (%.1f h)", seconds, seconds / 3600.0);
-  esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
-
-#if WAKE_BUTTON_PIN >= 0
-  // Wait until the button is released, otherwise it would wake us again instantly.
-  pinMode(WAKE_BUTTON_PIN, INPUT_PULLUP);
-  while (digitalRead(WAKE_BUTTON_PIN) == LOW) delay(10);
-  // Keep the pull-up active during sleep and wake when the pin is pulled LOW (button pressed).
-  rtc_gpio_pullup_en((gpio_num_t)WAKE_BUTTON_PIN);
-  rtc_gpio_pulldown_dis((gpio_num_t)WAKE_BUTTON_PIN);
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_BUTTON_PIN, 0);
-  Serial.printf(" - or press the button on GPIO%d", WAKE_BUTTON_PIN);
-#endif
-  Serial.println();
-  Serial.flush();
-
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-  esp_camera_deinit();
-  esp_deep_sleep_start();   // never returns; the board restarts into setup() on wake
-}
-
-// When the next scheduled photo is due, in seconds of the ESP32's RTC clock.
-// RTC_DATA_ATTR keeps it through deep sleep; the RTC clock keeps counting while asleep.
-RTC_DATA_ATTR int64_t nextCaptureAt = 0;
-RTC_DATA_ATTR bool scheduleSet = false;
-
-int64_t nowSec() {
-  struct timeval tv;
-  gettimeofday(&tv, nullptr);
-  return tv.tv_sec;
-}
-
-bool takePhoto() {
-  if (!initCamera()) return false;
-  connectWifi();
-  if (WiFi.status() != WL_CONNECTED) return false;
-  readAndSendSensors();
-  return captureAndSend();
-}
+// ---------- Main ----------
 
 void setup() {
   Serial.begin(115200);
-  delay(500);
+  delay(1000);
+  Serial.println("\nPECH-EYE CAMERA");
 
-  const uint64_t interval = TEST_INTERVAL_SECONDS > 0
-      ? TEST_INTERVAL_SECONDS
-      : (uint64_t)CAPTURE_INTERVAL_HOURS * 3600ULL;
-  esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-  bool button  = cause == ESP_SLEEP_WAKEUP_EXT0;
-  bool powerOn = cause != ESP_SLEEP_WAKEUP_TIMER && !button;   // power-on or RST
-  bool due     = cause == ESP_SLEEP_WAKEUP_TIMER && (!scheduleSet || nowSec() + 30 >= nextCaptureAt);
+  cameraOk = initCamera();
 
-  bool ok = false;
-  if (button) {
-    Serial.println("\nWake: manual button");   // extra photo; the 12 h schedule is unchanged
-    ok = takePhoto();
-  } else if (powerOn || due) {
-    Serial.println(powerOn ? "\nWake: power-on / RST" : "\nWake: scheduled capture");
-    ok = takePhoto();
-    // Failed (camera, Wi-Fi or upload)? Retry soon rather than losing a whole 12 h slot.
-    nextCaptureAt = nowSec() + (int64_t)((!ok && TEST_INTERVAL_SECONDS == 0) ? RETRY_MINUTES * 60ULL : interval);
-    scheduleSet = true;
-  } else {
-    Serial.println("\nWake: dashboard check-in");
-    connectWifi();
-    if (WiFi.status() == WL_CONNECTED && photoRequested()) {
-      Serial.println("Photo requested from the dashboard");
-      ok = takePhoto();   // if this fails the request stays pending and is retried next check-in
-    }
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);   // modem sleep stalls large uploads
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  // Full TX power garbles packets on many S3 boards; a lower power is more reliable.
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  lastWifiAttempt = millis();
+  Serial.print("Wi-Fi");
+  for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) { delay(500); Serial.print("."); }
+  Serial.println();
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("Live preview: http://");
+    Serial.println(WiFi.localIP());
   }
 
-  // Sleep until the next scheduled photo, but wake earlier for the dashboard check-in.
-  int64_t untilCapture = nextCaptureAt - nowSec();
-  if (untilCapture < 10) untilCapture = 10;
-  uint64_t sleepSeconds = untilCapture;
-  if (CHECK_INTERVAL_MINUTES > 0 && sleepSeconds > CHECK_INTERVAL_MINUTES * 60ULL)
-    sleepSeconds = CHECK_INTERVAL_MINUTES * 60ULL;
-  goToSleep(sleepSeconds);
+  server.on("/", handleRoot);
+  server.on("/capture", HTTP_GET, handleCapture);
+  server.begin();
 }
 
 void loop() {
-  // Not used: the board deep-sleeps at the end of setup() and restarts on wake.
+  server.handleClient();
+  maintainWifi();
+  if (WiFi.status() != WL_CONNECTED) { delay(10); return; }
+
+  // Scheduled photo (first one right after boot).
+  if ((int32_t)(millis() - nextCaptureAt) >= 0) {
+    Serial.println("Scheduled photo");
+    bool ok = uploadPhoto();
+    nextCaptureAt = millis() + (ok ? CAPTURE_INTERVAL_HOURS * 3600000UL : RETRY_MINUTES * 60000UL);
+  }
+
+  // Dashboard "Take photo" request.
+  if (CHECK_INTERVAL_MINUTES > 0 && millis() - lastCheck >= CHECK_INTERVAL_MINUTES * 60000UL) {
+    lastCheck = millis();
+    if (photoRequested()) {
+      Serial.println("Photo requested from the dashboard");
+      uploadPhoto();   // if it fails the request stays pending and is retried next check
+    }
+  }
+  delay(2);
 }

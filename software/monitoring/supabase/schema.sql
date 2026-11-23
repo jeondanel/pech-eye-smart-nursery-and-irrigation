@@ -1,31 +1,62 @@
--- Run this once in Supabase: Dashboard -> SQL Editor -> New query -> paste -> Run.
+-- PECH-EYE database (Supabase / Postgres).
+-- Fresh project: Dashboard -> SQL Editor -> New query -> paste this whole file -> Run.
+-- Existing project: run migrate.sql instead.
+-- Then: Storage -> New bucket -> name: tray-images -> tick "Public bucket" -> Create.
 
+-- One growing cycle of a seedling tray, from sowing to transplanting.
 create table batches (
   id bigint generated always as identity primary key,
   name text not null,
   started_at timestamptz not null default now(),
   ended_at timestamptz,
-  status text not null default 'growing',        -- growing | transplanted
+  status text not null default 'growing' check (status in ('growing', 'transplanted')),
   notes text,
   summary jsonb                                  -- filled at transplantation
 );
--- Only one batch may be 'growing' at a time
 create unique index one_growing_batch on batches (status) where status = 'growing';
 
+-- Controller snapshot, every 5 min and whenever the float switch changes.
 create table readings (
   id bigint generated always as identity primary key,
   batch_id bigint not null references batches(id),
   ts timestamptz not null default now(),
-  soil_moisture real,      -- %
-  humidity real,           -- %
-  temperature real,        -- C
-  distance_cm real,        -- raw ultrasonic distance
-  height_cm real,          -- derived plant height
-  reservoir_low boolean    -- float switch: true = mist reservoir needs refill
+  temperature real,        -- C   (DHT11)
+  humidity real,           -- %   (DHT11)
+  soil_raw int,            -- capacitive sensor ADC 0..4095 (higher = drier)
+  soil_moisture real,      -- %   calibrated from soil_raw
+  reservoir_low boolean,   -- float switch: true = mist reservoir needs refill
+  mist_on boolean,         -- relay states at the time of the reading
+  light_on boolean,
+  pump_on boolean
 );
--- Already created the table earlier? Run just this line instead:
---   alter table readings add column if not exists reservoir_low boolean;
 create index on readings (batch_id, ts);
+create index on readings (ts);
+
+-- One row per relay ON period (logged when it switches OFF).
+create table actuator_runs (
+  id bigint generated always as identity primary key,
+  batch_id bigint references batches(id),
+  device text not null check (device in ('mist', 'light', 'pump')),
+  started_at timestamptz not null,
+  ended_at timestamptz not null default now(),
+  duration_s real not null,
+  source text,             -- who switched it on: telegram | auto | dashboard
+  stopped_by text,         -- timer | safety | telegram
+  water_ml real            -- estimated from duration x flow rate (MIST_ML_PER_MIN / PUMP_ML_PER_MIN)
+);
+create index on actuator_runs (device, started_at);
+
+-- Notifications from the controller and the server (most are also sent to Telegram).
+create table alerts (
+  id bigint generated always as identity primary key,
+  batch_id bigint references batches(id),
+  ts timestamptz not null default now(),
+  kind text not null,      -- online | reservoir_low | reservoir_ok | safety_stop | tray_ready | transplanted
+  message text,
+  source text not null default 'controller',  -- controller | server
+  sent_telegram boolean not null default false
+);
+create index on alerts (ts);
 
 create table images (
   id bigint generated always as identity primary key,
@@ -41,7 +72,7 @@ create table images (
 );
 create index on images (batch_id, ts);
 
--- OpenWeather snapshots (outdoor conditions), logged every ~30 min while the system is active
+-- OpenWeather snapshots (outdoor conditions), at most one every 30 min.
 create table weather (
   id bigint generated always as identity primary key,
   ts timestamptz not null default now(),
@@ -52,19 +83,38 @@ create table weather (
 );
 create index on weather (ts);
 
--- Lock the tables: only the server (service-role key) can read/write. No public access.
-alter table batches  enable row level security;
-alter table readings enable row level security;
-alter table images   enable row level security;
-alter table weather  enable row level security;
+-- Dashboard "Take photo" -> camera picks it up on its next check-in.
+create table capture_requests (
+  id bigint generated always as identity primary key,
+  requested_at timestamptz not null default now(),
+  fulfilled_at timestamptz,
+  image_id bigint references images(id) on delete set null
+);
+create table camera_status (
+  id int primary key default 1 check (id = 1),   -- single row
+  last_seen timestamptz,
+  check_seconds int
+);
+
+-- Only the server (service-role key) can read/write. No public access.
+alter table batches          enable row level security;
+alter table readings         enable row level security;
+alter table actuator_runs    enable row level security;
+alter table alerts           enable row level security;
+alter table images           enable row level security;
+alter table weather          enable row level security;
+alter table capture_requests enable row level security;
+alter table camera_status    enable row level security;
 
 create or replace function batch_stats(p_batch bigint) returns json
 language sql stable as $$
   select json_build_object(
     'n', count(*),
+    'avg_temp', avg(temperature), 'min_temp', min(temperature), 'max_temp', max(temperature),
     'avg_humidity', avg(humidity), 'min_humidity', min(humidity), 'max_humidity', max(humidity),
     'avg_soil', avg(soil_moisture), 'min_soil', min(soil_moisture), 'max_soil', max(soil_moisture),
-    'avg_temp', avg(temperature), 'avg_height', avg(height_cm), 'max_height', max(height_cm))
+    'mist_runs', (select count(*) from actuator_runs where batch_id = p_batch and device = 'mist'),
+    'water_ml', (select coalesce(sum(water_ml), 0) from actuator_runs where batch_id = p_batch))
   from readings where batch_id = p_batch;
 $$;
 
@@ -75,21 +125,3 @@ language sql stable as $$
     'avg_rain_chance', avg(rain_chance_24h), 'max_rain_1h', max(rain_1h))
   from weather where ts between p_from and p_to;
 $$;
-
--- ---------- Remote "take a photo now" (dashboard -> camera) ----------
--- Already ran this file before? Run just this section in a new query.
-create table if not exists capture_requests (
-  id bigint generated always as identity primary key,
-  requested_at timestamptz not null default now(),
-  fulfilled_at timestamptz,                      -- set when the next photo arrives
-  image_id bigint references images(id) on delete set null
-);
-create table if not exists camera_status (
-  id int primary key default 1 check (id = 1),   -- single row
-  last_seen timestamptz,                         -- last check-in or upload from the camera
-  check_seconds int                              -- how often the camera checks in
-);
-alter table capture_requests enable row level security;
-alter table camera_status    enable row level security;
-
--- Then: Storage -> New bucket -> name: tray-images -> tick "Public bucket" -> Create.

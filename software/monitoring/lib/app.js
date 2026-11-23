@@ -9,7 +9,8 @@ const app = express();
 // NOTE: no body-parser middleware on purpose. Vercel may or may not pre-parse bodies,
 // so rawBody() below handles both cases.
 
-const MOUNT_HEIGHT = Number(process.env.MOUNT_HEIGHT_CM || 30);
+// Flow rates used to estimate water use from relay ON time (measure: run 60 s into a cup).
+const ML_PER_MIN = { mist: Number(process.env.MIST_ML_PER_MIN || 0), pump: Number(process.env.PUMP_ML_PER_MIN || 0) };
 const h = (fn) => (req, res) => fn(req, res).catch((e) => { console.error(e); res.status(500).json({ error: e.message }); });
 const num = (v) => (v === undefined || v === null || v === "" || Number.isNaN(Number(v)) ? null : Number(v));
 
@@ -39,6 +40,14 @@ const dashAuth = (req, res, next) => {
 };
 
 const withUrl = (r) => ({ ...r, url: imageUrl(r.file) });
+const phTime = (iso) => new Date(iso).toLocaleString("en-PH", { timeZone: "Asia/Manila" });
+
+// Logged to the alerts table; also sent to Telegram when telegram=true.
+async function logAlert(kind, message, { batchId = null, telegram = false } = {}) {
+  const sent = telegram ? await sendMessage(message).catch(() => false) : false;
+  const { error } = await sb.from("alerts").insert({ kind, message, batch_id: batchId, source: "server", sent_telegram: sent });
+  if (error) console.error("alerts:", error.message);
+}
 
 async function saveAnalysis(id, a) {
   ok(await sb.from("images").update({
@@ -71,15 +80,18 @@ app.post("/api/ingest/image", deviceAuth, h(async (req, res) => {
 
   // Runs after the response; waitUntil keeps the serverless function alive for it.
   waitUntil((async () => {
-    let caption = `PECH-EYE ${batch.name} - ${new Date(ts).toLocaleString("en-PH", { timeZone: "Asia/Manila" })}`;
+    let caption = `PECH-EYE ${batch.name} - ${phTime(ts)}`;
     const w = await ensureWeather();
-    if (w) caption += `\n🌤 Outdoor ${w.temp?.toFixed(1)}°C, ${w.humidity}% RH, rain chance ${Math.round(w.rain_chance_24h ?? 0)}% (${w.description})`;
+    if (w) caption += `\nOutdoor ${w.temp?.toFixed(1)} C, ${w.humidity}% RH, rain chance ${Math.round(w.rain_chance_24h ?? 0)}% (${w.description})`;
     if (req.query.analyze !== "0") {
       try {
         const a = await analyzeTray(buf);
         await saveAnalysis(row.id, a);
         caption += `\nReady: ${a.ready_cells}/${a.occupied_cells} plants (${Math.round(a.ready_ratio * 100)}%)`;
-        if (a.ready) caption += "\n✅ Tray looks READY for transplantation!";
+        if (a.ready) {
+          caption += "\nTray looks READY for transplantation.";
+          await logAlert("tray_ready", `${batch.name}: tray looks ready for transplantation (${a.ready_cells}/${a.occupied_cells} plants).`, { batchId: batch.id });
+        }
       } catch (e) { console.error("analysis failed:", e.message); }
     }
     await sendPhoto(buf, caption).catch((e) => console.error("telegram failed:", e.message));
@@ -95,18 +107,45 @@ app.get("/api/ingest/camera/poll", deviceAuth, h(async (req, res) => {
   res.json({ capture: pending.length > 0 });
 }));
 
-// JSON {soil_moisture, humidity, temperature, distance_cm, reservoir_low}; every field optional.
+const bool = (v) => (typeof v === "boolean" ? v : null);
+
+// Controller snapshot. JSON {temperature, humidity, soil_raw, soil_moisture, reservoir_low,
+// mist_on, light_on, pump_on}; every field optional.
 app.post("/api/ingest/reading", deviceAuth, h(async (req, res) => {
   const b = await jsonBody(req);
   const batch = await activeBatch();
-  const distance = num(b.distance_cm);
-  const height = distance === null ? null : Math.max(0, +(MOUNT_HEIGHT - distance).toFixed(1));
   ok(await sb.from("readings").insert({
-    batch_id: batch.id, soil_moisture: num(b.soil_moisture), humidity: num(b.humidity),
-    temperature: num(b.temperature), distance_cm: distance, height_cm: height,
-    reservoir_low: typeof b.reservoir_low === "boolean" ? b.reservoir_low : null,
+    batch_id: batch.id, temperature: num(b.temperature), humidity: num(b.humidity),
+    soil_raw: num(b.soil_raw), soil_moisture: num(b.soil_moisture), reservoir_low: bool(b.reservoir_low),
+    mist_on: bool(b.mist_on), light_on: bool(b.light_on), pump_on: bool(b.pump_on),
   }));
   await ensureWeather(); // keeps the outdoor weather log growing alongside sensor data
+  res.json({ ok: true });
+}));
+
+// A relay ON period, sent when it switches OFF. JSON {device, duration_s, source, stopped_by}.
+app.post("/api/ingest/run", deviceAuth, h(async (req, res) => {
+  const b = await jsonBody(req);
+  const duration = num(b.duration_s);
+  if (!["mist", "light", "pump"].includes(b.device) || duration === null) return res.status(400).json({ error: "device and duration_s required" });
+  const batch = await activeBatch();
+  const end = new Date();
+  const rate = ML_PER_MIN[b.device];
+  ok(await sb.from("actuator_runs").insert({
+    batch_id: batch.id, device: b.device, duration_s: duration,
+    started_at: new Date(end - duration * 1000).toISOString(), ended_at: end.toISOString(),
+    source: b.source || null, stopped_by: b.stopped_by || null,
+    water_ml: rate ? +((duration / 60) * rate).toFixed(1) : null,
+  }));
+  res.json({ ok: true });
+}));
+
+// An alert the controller already sent to Telegram. JSON {kind, message, sent_telegram}.
+app.post("/api/ingest/alert", deviceAuth, h(async (req, res) => {
+  const b = await jsonBody(req);
+  if (!b.kind) return res.status(400).json({ error: "kind required" });
+  const batch = await activeBatch();
+  ok(await sb.from("alerts").insert({ batch_id: batch.id, kind: String(b.kind), message: b.message || null, sent_telegram: b.sent_telegram === true }));
   res.json({ ok: true });
 }));
 
@@ -175,6 +214,17 @@ app.get("/api/readings", h(async (req, res) => {
   res.json(rows.filter((_, i) => i % step === 0));
 }));
 
+// Sensor history pages: every reading and mist run of the last N days (any batch).
+app.get("/api/history", h(async (req, res) => {
+  const days = Math.min(90, Math.max(1, num(req.query.days) || 7));
+  const from = new Date(Date.now() - days * 86400000).toISOString();
+  const [readings, runs] = await Promise.all([
+    fetchAll((a, b) => sb.from("readings").select("ts, temperature, humidity, soil_moisture, soil_raw, reservoir_low").gte("ts", from).order("ts").range(a, b)),
+    fetchAll((a, b) => sb.from("actuator_runs").select("started_at, duration_s, water_ml, source").eq("device", "mist").gte("started_at", from).order("started_at", { ascending: false }).range(a, b)),
+  ]);
+  res.json({ from, days, readings, runs });
+}));
+
 // Every photo of a batch (newest first) for the Photos gallery.
 app.get("/api/images", h(async (req, res) => {
   const batch = req.query.batch
@@ -184,8 +234,15 @@ app.get("/api/images", h(async (req, res) => {
   res.json({ batch, images: rows.map(withUrl) });
 }));
 
+// Each batch with its newest photo as a cover (Photos -> Transplanted Batch cards).
 app.get("/api/batches", h(async (_req, res) => {
-  res.json(ok(await sb.from("batches").select("*").order("id", { ascending: false })));
+  const batches = ok(await sb.from("batches").select("*").order("id", { ascending: false }));
+  const covers = await Promise.all(batches.map((b) =>
+    sb.from("images").select("file").eq("batch_id", b.id).order("ts", { ascending: false }).limit(1)));
+  res.json(batches.map((b, i) => {
+    const file = covers[i].data?.[0]?.file;
+    return { ...b, cover: file ? imageUrl(file) : null };
+  }));
 }));
 
 app.post("/api/batches", h(async (req, res) => {
@@ -211,9 +268,10 @@ async function buildSummary(batch, endedAt) {
     started_at: batch.started_at, ended_at: endedAt,
     duration_days: r1(ms / 86400000), duration_hours: r1(ms / 3600000),
     readings: s.n, images: imgs.count || 0,
+    avg_temperature: r1(s.avg_temp), min_temperature: r1(s.min_temp), max_temperature: r1(s.max_temp),
     avg_humidity: r1(s.avg_humidity), min_humidity: r1(s.min_humidity), max_humidity: r1(s.max_humidity),
     avg_soil_moisture: r1(s.avg_soil), min_soil_moisture: r1(s.min_soil), max_soil_moisture: r1(s.max_soil),
-    avg_temperature: r1(s.avg_temp), avg_height_cm: r1(s.avg_height), max_height_cm: r1(s.max_height),
+    mist_runs: s.mist_runs ?? 0, water_ml: r1(s.water_ml),
     outdoor_avg_temp: r1(w.avg_temp), outdoor_avg_humidity: r1(w.avg_humidity),
     outdoor_avg_rain_chance: r1(w.avg_rain_chance), outdoor_max_rain_1h: r1(w.max_rain_1h),
     final_analysis: ok(last)[0] || null,
@@ -233,7 +291,7 @@ app.post("/api/batches/:id/transplant", h(async (req, res) => {
   const endedAt = new Date().toISOString();
   const summary = await buildSummary(b, endedAt);
   ok(await sb.from("batches").update({ status: "transplanted", ended_at: endedAt, summary, notes: body.notes || b.notes }).eq("id", b.id));
-  waitUntil(sendMessage(`🌱 ${b.name} transplanted after ${summary.duration_days} days. Avg humidity ${summary.avg_humidity}%, avg soil moisture ${summary.avg_soil_moisture}%.`).catch(() => {}));
+  waitUntil(logAlert("transplanted", `${b.name} transplanted after ${summary.duration_days} days. Avg temperature ${summary.avg_temperature} C, avg humidity ${summary.avg_humidity}%.`, { batchId: b.id, telegram: true }));
   res.json(summary);
 }));
 
