@@ -2,11 +2,10 @@ import { useState } from "react";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { api } from "../api.js";
 import { Empty, Icon, Skel } from "../ui.jsx";
-import { SENSORS, clockTimeSec, dayKey, fmt, fullDate, rangeLabel, sensorStatus, shortDate, usePoll, water, when } from "../lib.js";
-import { tooltipStyle } from "./Dashboard.jsx";
+import { SENSORS, clockTimeSec, dayKey, fmt, fullDate, rangeLabel, sensorStatus, shortDate, useChart, usePoll, water, when } from "../lib.js";
 
 const RANGES = [7, 14, 30];
-const axis = { tick: { fill: "#9aa894", fontSize: 11, fontFamily: "Poppins" }, stroke: "#3a463a", tickLine: false };
+const axisOf = (c) => ({ tick: { fill: c.tick, fontSize: 11, fontFamily: "Poppins" }, stroke: c.axis, tickLine: false });
 
 function RangePicker({ days, setDays, from }) {
   return (
@@ -39,6 +38,7 @@ const avg = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
 /* ---------- temperature / humidity / soil ---------- */
 
 function SensorPage({ cfg, data, days, setDays }) {
+  const c = useChart(), axis = axisOf(c);
   const noun = cfg.title.toLowerCase();
   const rows = data.readings.filter((r) => r[cfg.key] != null);
   const period = `Last ${days} days`;
@@ -87,8 +87,8 @@ function SensorPage({ cfg, data, days, setDays }) {
             <LineChart data={chart} margin={{ top: 10, right: 12, left: -12, bottom: 0 }}>
               <XAxis dataKey="label" {...axis} minTickGap={24} tickMargin={8} />
               <YAxis {...axis} domain={["auto", "auto"]} width={46} tickFormatter={(v) => Math.round(v)} />
-              <Tooltip contentStyle={tooltipStyle} formatter={(v) => [`${v} ${cfg.unit}`, `Avg ${noun}`]} />
-              <Line isAnimationActive={false} type="linear" dataKey="value" stroke="#8ABB63" strokeWidth={1.3} dot={{ r: 4, fill: "#fff", stroke: "none" }} activeDot={{ r: 5 }} />
+              <Tooltip contentStyle={c.tooltip} formatter={(v) => [`${v} ${cfg.unit}`, `Avg ${noun}`]} />
+              <Line isAnimationActive={false} type="linear" dataKey="value" stroke={c.lines[1]} strokeWidth={1.3} dot={{ r: 4, fill: c.dot, stroke: "none" }} activeDot={{ r: 5 }} />
             </LineChart>
           </ResponsiveContainer>
         )}
@@ -129,6 +129,7 @@ function SensorPage({ cfg, data, days, setDays }) {
 /* ---------- mist reservoir ---------- */
 
 function ReservoirPage({ data, days, setDays }) {
+  const c = useChart(), axis = axisOf(c);
   const { readings, runs } = data;
   const last = [...readings].reverse().find((r) => r.reservoir_low != null);
   const metered = runs.some((r) => r.water_ml != null);
@@ -170,13 +171,13 @@ function ReservoirPage({ data, days, setDays }) {
               <XAxis dataKey="label" {...axis} tickMargin={8} />
               <YAxis yAxisId="pct" {...axis} domain={[0, 100]} width={46} unit="%" />
               <YAxis yAxisId="right" orientation="right" {...axis} width={70} unit={metered ? " mL" : ""} allowDecimals={false} />
-              <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "rgba(255,255,255,.04)" }}
+              <Tooltip contentStyle={c.tooltip} cursor={{ fill: c.cursor }}
                 formatter={(v, name) => [name === "Reservoir OK" ? `${v}% of readings` : metered ? `${v} mL` : v, name]} />
               <Legend iconType="circle" iconSize={9} wrapperStyle={{ fontFamily: "Poppins", fontSize: 12, paddingTop: 10 }} />
-              <Bar isAnimationActive={false} yAxisId="pct" dataKey="ok" name="Reservoir OK" fill="#DFF3A0" radius={[3, 3, 0, 0]} maxBarSize={40} />
+              <Bar isAnimationActive={false} yAxisId="pct" dataKey="ok" name="Reservoir OK" fill={c.bars[0]} radius={[3, 3, 0, 0]} maxBarSize={40} />
               {metered
-                ? <Bar isAnimationActive={false} yAxisId="right" dataKey="used" name="Water consumed" fill="#88B43A" radius={[3, 3, 0, 0]} maxBarSize={40} />
-                : <Bar isAnimationActive={false} yAxisId="right" dataKey="runs" name="Misting runs" fill="#88B43A" radius={[3, 3, 0, 0]} maxBarSize={40} />}
+                ? <Bar isAnimationActive={false} yAxisId="right" dataKey="used" name="Water consumed" fill={c.bars[1]} radius={[3, 3, 0, 0]} maxBarSize={40} />
+                : <Bar isAnimationActive={false} yAxisId="right" dataKey="runs" name="Misting runs" fill={c.bars[1]} radius={[3, 3, 0, 0]} maxBarSize={40} />}
             </BarChart>
           </ResponsiveContainer>
         )}

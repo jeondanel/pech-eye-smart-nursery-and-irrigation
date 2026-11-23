@@ -16,7 +16,7 @@ const dateTime = (iso) => {
 };
 
 // Photos of one batch. mode "day": every photo grouped by day. "growth": the last photo of each day.
-function BatchPhotos({ batchId, mode, header }) {
+export function BatchPhotos({ batchId, mode, header }) {
   const [open, setOpen] = useState(null);
   const close = useCallback(() => setOpen(null), []);
   const { data, error } = usePoll(() => api.images(batchId), [batchId], 20000);
@@ -25,6 +25,7 @@ function BatchPhotos({ batchId, mode, header }) {
   if (!data) return <Skel h={240} />;
 
   const { batch } = data;
+  if (!batch) return <div className="card"><Empty icon="potted_plant">No batch is being monitored. Start one from the <a className="link" href="#/dashboard">Dashboard</a>.</Empty></div>;
   const start = batch.started_at;
   const days = [];
   data.images.forEach((im) => {
@@ -45,7 +46,7 @@ function BatchPhotos({ batchId, mode, header }) {
             <div className="gallery">
               {images.map((im, i) => (
                 <Shot key={im.id} im={im} onOpen={() => setOpen(i)}
-                  label={`Day ${dayOf(start, im.ts)}${im.analysis ? ` · ${im.ready_cells}/${im.occupied_cells} ready` : ""}`} />
+                  label={`Day ${dayOf(start, im.ts)}${im.analysis ? ` · ${im.canopy_pct}% green` : ""}`} />
               ))}
             </div>
           </>

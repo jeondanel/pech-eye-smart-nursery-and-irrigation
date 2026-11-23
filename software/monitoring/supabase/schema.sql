@@ -9,16 +9,17 @@ create table batches (
   name text not null,
   started_at timestamptz not null default now(),
   ended_at timestamptz,
-  status text not null default 'growing' check (status in ('growing', 'transplanted')),
+  status text not null default 'growing' check (status in ('growing', 'transplanted', 'stopped')),  -- stopped = ended early
   notes text,
-  summary jsonb                                  -- filled at transplantation
+  summary jsonb                                  -- filled when the batch ends
 );
 create unique index one_growing_batch on batches (status) where status = 'growing';
 
 -- Controller snapshot, every 5 min and whenever the float switch changes.
+-- batch_id is null while no batch is being monitored.
 create table readings (
   id bigint generated always as identity primary key,
-  batch_id bigint not null references batches(id),
+  batch_id bigint references batches(id),
   ts timestamptz not null default now(),
   temperature real,        -- C   (DHT11)
   humidity real,           -- %   (DHT11)

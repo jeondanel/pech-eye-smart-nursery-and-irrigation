@@ -1,15 +1,20 @@
 // Tray analyzer based on the Excess Green Index (ExG), no AI involved.
 //   ExG = 2g - r - b   where r,g,b are chromatic coordinates (R/(R+G+B), ...)
-// A pixel counts as "plant" when ExG > EXG_THRESHOLD. The photo is split into a
-// ROWS x COLS grid (72 holes = 6 x 12) and each hole gets a green-coverage %.
+// A pixel counts as "plant" when ExG > EXG_THRESHOLD. The share of green pixels
+// in the tray (canopy %) decides the stage:
+//   no green              -> "Still growing" (seedlings not visible yet)
+//   some green            -> "Growing"
+//   full of green (no soil/black visible, canopy >= FULL_GREEN_PCT) -> ready: alert the user
+// The photo is also split into a ROWS x COLS grid (72 holes = 6 x 12) for the hole map.
 import jpeg from "jpeg-js";
 
 const ROWS = Number(process.env.TRAY_ROWS || 6);
 const COLS = Number(process.env.TRAY_COLS || 12);
 const EXG_THRESHOLD = Number(process.env.EXG_THRESHOLD || 0.1);
 const EMPTY_COVER = Number(process.env.EMPTY_COVER || 0.05);   // below this = empty hole
-const READY_COVER = Number(process.env.READY_COVER || 0.5);    // at/above this = ready seedling
-const READY_RATIO = Number(process.env.READY_THRESHOLD || 0.8); // share of planted holes that must be ready
+const READY_COVER = Number(process.env.READY_COVER || 0.5);    // at/above this = hole covered in green
+const NO_GREEN_PCT = Number(process.env.NO_GREEN_PCT || 5);      // canopy below this = no green yet
+const FULL_GREEN_PCT = Number(process.env.FULL_GREEN_PCT || 85); // canopy at/above this = tray full of green
 // Region of the photo that contains the tray, as fractions "x,y,w,h" (default: whole frame).
 const [CX, CY, CW, CH] = (process.env.TRAY_CROP || "0,0,1,1").split(",").map(Number);
 
@@ -39,16 +44,17 @@ export async function analyzeTray(jpegBuffer) {
   const cells = cover.map((c) => (c < EMPTY_COVER ? "empty" : c >= READY_COVER ? "ready" : "growing"));
   const ready = cells.filter((c) => c === "ready").length;
   const occupied = cells.filter((c) => c !== "empty").length;
-  const ratio = occupied ? ready / occupied : 0;
   const canopy = (green.reduce((a, b) => a + b, 0) / Math.max(1, total.reduce((a, b) => a + b, 0))) * 100;
+  const stage = canopy < NO_GREEN_PCT ? "no_green" : canopy < FULL_GREEN_PCT ? "growing" : "full";
 
   return {
     method: "exg", source: "exg",
     rows: ROWS, cols: COLS, cells,
     cover: cover.map((c) => +(c * 100).toFixed(1)),   // per-hole green coverage %
     canopy_pct: +canopy.toFixed(1),
-    notes: `ExG > ${EXG_THRESHOLD}; hole empty < ${EMPTY_COVER * 100}% green, ready >= ${READY_COVER * 100}% green.`,
+    notes: `ExG > ${EXG_THRESHOLD}; no green < ${NO_GREEN_PCT}% canopy, full >= ${FULL_GREEN_PCT}% canopy.`,
     ready_cells: ready, occupied_cells: occupied, total_cells: cells.length,
-    ready_ratio: ratio, ready: occupied > 0 && ratio >= READY_RATIO,
+    stage, stage_label: { no_green: "Still growing (no green yet)", growing: "Growing", full: "Full of green" }[stage],
+    ready: stage === "full",
   };
 }

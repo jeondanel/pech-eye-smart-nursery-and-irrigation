@@ -1,20 +1,38 @@
 import { useEffect, useState } from "react";
-import { dayOf, useNow } from "./lib.js";
+import { applyTheme, dayOf, useNow, useTheme } from "./lib.js";
 
 // Google Material Symbols (Rounded), loaded in index.html. Names: https://fonts.google.com/icons
 export const Icon = ({ name, className = "", fill = false }) => (
   <span className={`ms ${fill ? "fill" : ""} ${className}`} aria-hidden="true">{name}</span>
 );
 
-// Put your logo at public/logo.png (see README). Until it exists, a leaf icon is shown.
+// public/logo-light-mode.png and public/logo-dark-mode.png, picked by the theme.
+// If the file is missing, a leaf icon is shown instead.
 export function Logo({ size = 36 }) {
-  const [failed, setFailed] = useState(false);
+  const theme = useTheme();
+  const src = `/logo-${theme}-mode.png`;
+  const [failed, setFailed] = useState(null);
   return (
     <span className="logo" style={{ width: size, height: size }}>
-      {failed ? <Icon name="eco" /> : <img src="/logo.png" alt="" onError={() => setFailed(true)} />}
+      {failed === src ? <Icon name="eco" /> : <img src={src} alt="" onError={() => setFailed(src)} />}
     </span>
   );
 }
+
+export function ThemeToggle() {
+  const dark = useTheme() === "dark";
+  return (
+    <button className="theme-btn" onClick={() => applyTheme(dark ? "light" : "dark")}
+      aria-label={dark ? "Switch to light mode" : "Switch to dark mode"} title={dark ? "Light mode" : "Dark mode"}>
+      <Icon name={dark ? "light_mode" : "dark_mode"} />
+    </button>
+  );
+}
+
+// Small round status light, e.g. camera online/offline.
+export const StatusDot = ({ on, label }) => (
+  <span className={`status-dot ${on ? "on" : "off"}`}><i />{label}</span>
+);
 
 export function Clock() {
   const now = useNow(1000);
@@ -45,7 +63,7 @@ export const Empty = ({ icon, children }) => (
 
 export const Skel = ({ h = 90 }) => <div className="skel" style={{ height: h }} />;
 
-export function Login({ wrong, onSubmit }) {
+export function Login({ wrong, busy, onSubmit }) {
   const [p, setP] = useState("");
   return (
     <form className="card login" onSubmit={(e) => { e.preventDefault(); onSubmit(p); }}>
@@ -54,7 +72,7 @@ export function Login({ wrong, onSubmit }) {
       <p className="muted">Enter the dashboard password to continue.</p>
       <input type="password" autoFocus autoComplete="current-password" placeholder="Password" value={p} onChange={(e) => setP(e.target.value)} />
       {wrong && <div className="err">Wrong password. Try again.</div>}
-      <button className="btn block" type="submit">Open dashboard</button>
+      <button className="btn block" type="submit" disabled={busy}>{busy ? "Checking..." : "Open dashboard"}</button>
     </form>
   );
 }
@@ -88,7 +106,7 @@ export function Lightbox({ images, index, start, onIndex, onClose }) {
         <div className="lb-bot">
           <button className="lb-nav" disabled={index <= 0} onClick={() => onIndex(index - 1)} aria-label="Previous photo"><Icon name="west" /></button>
           <span>
-            {im.analysis ? `${im.ready_cells}/${im.occupied_cells} ready` : "not analyzed"} - {index + 1} of {images.length} - <a href={im.url} target="_blank" rel="noreferrer">Full Size</a>
+            {im.analysis ? `${im.analysis.stage_label || (im.ready ? "Full of green" : "Growing")}, ${im.canopy_pct}% green` : "not analyzed"} - {index + 1} of {images.length} - <a href={im.url} target="_blank" rel="noreferrer">Full Size</a>
           </span>
           <button className="lb-nav" disabled={index >= images.length - 1} onClick={() => onIndex(index + 1)} aria-label="Next photo"><Icon name="east" /></button>
         </div>

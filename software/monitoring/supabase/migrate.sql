@@ -64,3 +64,10 @@ language sql stable as $$
     'water_ml', (select coalesce(sum(water_ml), 0) from actuator_runs where batch_id = p_batch))
   from readings where batch_id = p_batch;
 $$;
+
+-- Batches start only when someone presses "Start monitoring"; readings before that have no batch.
+alter table readings alter column batch_id drop not null;
+
+-- A batch can now be stopped early (plants died / not continued).
+alter table batches drop constraint if exists batches_status_check;
+alter table batches add constraint batches_status_check check (status in ('growing', 'transplanted', 'stopped'));

@@ -24,13 +24,7 @@ export async function fetchAll(makeQuery) {
 
 export const imageUrl = (file) => sb.storage.from(BUCKET).getPublicUrl(file).data.publicUrl;
 
+// The batch being monitored, or null until someone presses "Start monitoring".
 export async function activeBatch() {
-  const found = ok(await sb.from("batches").select("*").eq("status", "growing").limit(1));
-  if (found.length) return found[0];
-  const { data, error } = await sb.from("batches").insert({ name: "Batch 1" }).select().single();
-  if (error) {
-    // Lost a race with another request creating it: read it back.
-    return ok(await sb.from("batches").select("*").eq("status", "growing").limit(1).single());
-  }
-  return data;
+  return ok(await sb.from("batches").select("*").eq("status", "growing").limit(1))[0] || null;
 }

@@ -41,6 +41,10 @@ const dashAuth = (req, res, next) => {
 
 const withUrl = (r) => ({ ...r, url: imageUrl(r.file) });
 const phTime = (iso) => new Date(iso).toLocaleString("en-PH", { timeZone: "Asia/Manila" });
+// Calendar day of a batch in Philippine time: the start date is Day 1.
+const phMidnight = (d) => Date.parse(new Date(d).toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }));
+const batchDay = (b, at = Date.now()) => Math.round((phMidnight(at) - phMidnight(b.started_at)) / 86400000) + 1;
+const MIN_TRANSPLANT_DAY = 10;
 
 // Logged to the alerts table; also sent to Telegram when telegram=true.
 async function logAlert(kind, message, { batchId = null, telegram = false } = {}) {
@@ -65,6 +69,11 @@ app.post("/api/ingest/image", deviceAuth, h(async (req, res) => {
   if (buf.length < 100) return res.status(400).json({ error: "send a JPEG body" });
   const batch = await activeBatch();
   const ts = new Date().toISOString();
+  if (!batch) {
+    // Nothing is being monitored: keep the camera marked online but don't store the photo.
+    await sb.from("camera_status").upsert({ id: 1, last_seen: ts });
+    return res.json({ ok: true, skipped: "no batch is being monitored" });
+  }
   const file = `${batch.id}/${ts.replace(/[:.]/g, "-")}.jpg`;
   const up = await sb.storage.from(BUCKET).upload(file, buf, { contentType: "image/jpeg" });
   if (up.error) throw new Error(up.error.message);
@@ -87,10 +96,10 @@ app.post("/api/ingest/image", deviceAuth, h(async (req, res) => {
       try {
         const a = await analyzeTray(buf);
         await saveAnalysis(row.id, a);
-        caption += `\nReady: ${a.ready_cells}/${a.occupied_cells} plants (${Math.round(a.ready_ratio * 100)}%)`;
+        caption += `\nTray: ${a.stage_label} (${a.canopy_pct}% green)`;
         if (a.ready) {
-          caption += "\nTray looks READY for transplantation.";
-          await logAlert("tray_ready", `${batch.name}: tray looks ready for transplantation (${a.ready_cells}/${a.occupied_cells} plants).`, { batchId: batch.id });
+          caption += "\nCheck the tray for transplantation.";
+          await logAlert("tray_ready", `${batch.name}: the tray is full of green (${a.canopy_pct}%). Check it for transplantation.`, { batchId: batch.id });
         }
       } catch (e) { console.error("analysis failed:", e.message); }
     }
@@ -115,7 +124,7 @@ app.post("/api/ingest/reading", deviceAuth, h(async (req, res) => {
   const b = await jsonBody(req);
   const batch = await activeBatch();
   ok(await sb.from("readings").insert({
-    batch_id: batch.id, temperature: num(b.temperature), humidity: num(b.humidity),
+    batch_id: batch?.id ?? null, temperature: num(b.temperature), humidity: num(b.humidity),
     soil_raw: num(b.soil_raw), soil_moisture: num(b.soil_moisture), reservoir_low: bool(b.reservoir_low),
     mist_on: bool(b.mist_on), light_on: bool(b.light_on), pump_on: bool(b.pump_on),
   }));
@@ -132,7 +141,7 @@ app.post("/api/ingest/run", deviceAuth, h(async (req, res) => {
   const end = new Date();
   const rate = ML_PER_MIN[b.device];
   ok(await sb.from("actuator_runs").insert({
-    batch_id: batch.id, device: b.device, duration_s: duration,
+    batch_id: batch?.id ?? null, device: b.device, duration_s: duration,
     started_at: new Date(end - duration * 1000).toISOString(), ended_at: end.toISOString(),
     source: b.source || null, stopped_by: b.stopped_by || null,
     water_ml: rate ? +((duration / 60) * rate).toFixed(1) : null,
@@ -145,12 +154,15 @@ app.post("/api/ingest/alert", deviceAuth, h(async (req, res) => {
   const b = await jsonBody(req);
   if (!b.kind) return res.status(400).json({ error: "kind required" });
   const batch = await activeBatch();
-  ok(await sb.from("alerts").insert({ batch_id: batch.id, kind: String(b.kind), message: b.message || null, sent_telegram: b.sent_telegram === true }));
+  ok(await sb.from("alerts").insert({ batch_id: batch?.id ?? null, kind: String(b.kind), message: b.message || null, sent_telegram: b.sent_telegram === true }));
   res.json({ ok: true });
 }));
 
 // ---------- Dashboard (password protected) ----------
 app.use("/api", dashAuth);
+
+// The login screen calls this to check the password.
+app.get("/api/session", (_req, res) => res.json({ ok: true }));
 
 app.post("/api/images/:id/analyze", h(async (req, res) => {
   const row = ok(await sb.from("images").select("*").eq("id", req.params.id).single());
@@ -187,6 +199,14 @@ app.get("/api/dashboard", h(async (req, res) => {
   const batch = req.query.batch
     ? ok(await sb.from("batches").select("*").eq("id", req.query.batch).single())
     : await activeBatch();
+  if (!batch) {
+    // No batch yet: only the chamber climate and the outdoor weather.
+    const [lr, weather] = await Promise.all([
+      sb.from("readings").select("*").order("ts", { ascending: false }).limit(1),
+      ensureWeather(),
+    ]);
+    return res.json({ batch: null, latestReading: ok(lr)[0] || null, weather });
+  }
   const [lr, recent, cnt, weather, camera] = await Promise.all([
     sb.from("readings").select("*").eq("batch_id", batch.id).order("ts", { ascending: false }).limit(1),
     sb.from("images").select("*").eq("batch_id", batch.id).order("ts", { ascending: false }).limit(12),
@@ -197,7 +217,8 @@ app.get("/api/dashboard", h(async (req, res) => {
   const recentImages = ok(recent).map(withUrl);
   res.json({
     batch,
-    daysGrowing: Math.max(0, (new Date(batch.ended_at || Date.now()) - new Date(batch.started_at)) / 86400000),
+    day: batchDay(batch, batch.ended_at || Date.now()),
+    minTransplantDay: MIN_TRANSPLANT_DAY,
     latestReading: ok(lr)[0] || null,
     recentImages,
     latestAnalyzed: recentImages.find((i) => i.analysis) || null,
@@ -208,7 +229,8 @@ app.get("/api/dashboard", h(async (req, res) => {
 }));
 
 app.get("/api/readings", h(async (req, res) => {
-  const id = req.query.batch || (await activeBatch()).id;
+  const id = req.query.batch || (await activeBatch())?.id;
+  if (!id) return res.json([]);
   const rows = await fetchAll((a, b) => sb.from("readings").select("*").eq("batch_id", id).order("ts").range(a, b));
   const step = Math.ceil(rows.length / 500) || 1; // downsample for fast charts
   res.json(rows.filter((_, i) => i % step === 0));
@@ -230,6 +252,7 @@ app.get("/api/images", h(async (req, res) => {
   const batch = req.query.batch
     ? ok(await sb.from("batches").select("*").eq("id", req.query.batch).single())
     : await activeBatch();
+  if (!batch) return res.json({ batch: null, images: [] });
   const rows = await fetchAll((a, b) => sb.from("images").select("*").eq("batch_id", batch.id).order("ts", { ascending: false }).range(a, b));
   res.json({ batch, images: rows.map(withUrl) });
 }));
@@ -245,12 +268,11 @@ app.get("/api/batches", h(async (_req, res) => {
   }));
 }));
 
-app.post("/api/batches", h(async (req, res) => {
-  const b = await jsonBody(req);
-  const growing = ok(await sb.from("batches").select("id").eq("status", "growing"));
-  if (growing.length) return res.status(409).json({ error: "A batch is still growing. Transplant it first." });
+// "Start monitoring": batches are numbered Batch 1, Batch 2, ... in creation order.
+app.post("/api/batches", h(async (_req, res) => {
+  if (await activeBatch()) return res.status(409).json({ error: "A batch is already being monitored." });
   const { count } = await sb.from("batches").select("id", { count: "exact", head: true });
-  res.json(ok(await sb.from("batches").insert({ name: b.name || `Batch ${(count || 0) + 1}` }).select().single()));
+  res.json(ok(await sb.from("batches").insert({ name: `Batch ${(count || 0) + 1}` }).select().single()));
 }));
 
 async function buildSummary(batch, endedAt) {
@@ -259,7 +281,7 @@ async function buildSummary(batch, endedAt) {
     sb.rpc("batch_stats", { p_batch: batch.id }),
     sb.rpc("weather_stats", { p_from: batch.started_at, p_to: endedAt }),
     sb.from("images").select("id", { count: "exact", head: true }).eq("batch_id", batch.id),
-    sb.from("images").select("ready_cells, occupied_cells, total_cells, canopy_pct").eq("batch_id", batch.id)
+    sb.from("images").select("ready_cells, occupied_cells, total_cells, canopy_pct, ready").eq("batch_id", batch.id)
       .not("analysis", "is", null).order("ts", { ascending: false }).limit(1),
   ]);
   const s = ok(stats), w = ok(wx);
@@ -283,16 +305,23 @@ app.get("/api/batches/:id/summary", h(async (req, res) => {
   res.json(b.summary || (await buildSummary(b, b.ended_at || new Date().toISOString())));
 }));
 
-// Closes the batch: freezes the logs and stores the overall summary.
-app.post("/api/batches/:id/transplant", h(async (req, res) => {
+// Ends the batch (transplanted, or stopped early): freezes the logs and stores the summary.
+async function closeBatch(req, res, status) {
   const body = await jsonBody(req);
   const b = ok(await sb.from("batches").select("*").eq("id", req.params.id).single());
-  if (b.status !== "growing") return res.status(409).json({ error: "already transplanted" });
+  if (b.status !== "growing") return res.status(409).json({ error: "This batch has already ended." });
+  if (status === "transplanted" && batchDay(b) < MIN_TRANSPLANT_DAY)
+    return res.status(409).json({ error: `Transplanting is allowed from Day ${MIN_TRANSPLANT_DAY}.` });
   const endedAt = new Date().toISOString();
   const summary = await buildSummary(b, endedAt);
-  ok(await sb.from("batches").update({ status: "transplanted", ended_at: endedAt, summary, notes: body.notes || b.notes }).eq("id", b.id));
-  waitUntil(logAlert("transplanted", `${b.name} transplanted after ${summary.duration_days} days. Avg temperature ${summary.avg_temperature} C, avg humidity ${summary.avg_humidity}%.`, { batchId: b.id, telegram: true }));
+  ok(await sb.from("batches").update({ status, ended_at: endedAt, summary, notes: body.notes || b.notes }).eq("id", b.id));
+  const msg = status === "transplanted"
+    ? `${b.name} transplanted after ${summary.duration_days} days. Avg temperature ${summary.avg_temperature} C, avg humidity ${summary.avg_humidity}%.`
+    : `${b.name} monitoring stopped on Day ${batchDay(b)}${body.notes ? `: ${body.notes}` : "."}`;
+  waitUntil(logAlert(status, msg, { batchId: b.id, telegram: true }));
   res.json(summary);
-}));
+}
+app.post("/api/batches/:id/transplant", h((req, res) => closeBatch(req, res, "transplanted")));
+app.post("/api/batches/:id/stop", h((req, res) => closeBatch(req, res, "stopped")));
 
 export default app;

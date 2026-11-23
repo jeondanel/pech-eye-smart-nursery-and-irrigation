@@ -9,7 +9,6 @@ export const clockTimeSec = (iso) => new Date(iso).toLocaleTimeString([], { hour
 export const longDate = (d) => new Date(d).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
 export const fullDate = (d) => new Date(d).toLocaleDateString([], { month: "long", day: "numeric", year: "numeric" });
 export const shortDate = (d) => new Date(d).toLocaleDateString([], { month: "short", day: "numeric" });
-export const every = (s) => (s >= 3600 ? `${+(s / 3600).toFixed(1)} h` : s >= 60 ? `${Math.round(s / 60)} min` : `${s} s`);
 export const ago = (iso) => {
   const s = (Date.now() - new Date(iso)) / 1000;
   if (s < 60) return "just now";
@@ -32,6 +31,9 @@ export function rangeLabel(from, to) {
 
 export const midnight = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
 export const dayKey = (d) => midnight(d).getTime();
+// Transplanting is allowed from this batch day (the server checks it too).
+export const MIN_TRANSPLANT_DAY = 10;
+
 // Calendar days since the batch started (local time): the start date is Day 1.
 export const dayOf = (start, at = Date.now()) => Math.max(1, Math.round((midnight(at) - midnight(start)) / 86400000) + 1);
 
@@ -51,7 +53,7 @@ export function sensorStatus(cfg, v) {
   return { label: cfg.labels[1], tone: "normal" };
 }
 
-// Same rules as the controller's irrigation decision.
+// Same rules as the controller's irrigation decision. Not shown on the dashboard for now.
 export function irrigationDecision(w, r) {
   if (!w || !r) return { tone: "grey", icon: "hourglass_top", title: "Irrigation decision pending", text: "Waiting for weather and sensor data." };
   if (w.rain_chance_24h >= 50 || w.rain_1h > 0.5)
@@ -60,6 +62,40 @@ export function irrigationDecision(w, r) {
     return { tone: "warn", icon: "heat", title: "Heat stress: misting recommended", text: `Chamber is ${fmt(r.temperature, "°C")} at ${fmt(r.humidity, "%")} humidity.` };
   return { tone: "ok", icon: "check_circle", title: "Irrigation permitted", text: "Clear weather. Normal irrigation schedule allowed." };
 }
+
+/* ---------- theme (light is the default) ---------- */
+
+const THEME_KEY = "pecheye_theme";
+export const savedTheme = () => { try { return localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light"; } catch { return "light"; } };
+export function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem(THEME_KEY, t); } catch { /* private mode */ }
+  window.dispatchEvent(new Event("pecheye-theme"));
+}
+export function useTheme() {
+  const [t, setT] = useState(() => document.documentElement.dataset.theme || "light");
+  useEffect(() => {
+    const h = () => setT(document.documentElement.dataset.theme);
+    window.addEventListener("pecheye-theme", h);
+    return () => window.removeEventListener("pecheye-theme", h);
+  }, []);
+  return t;
+}
+
+// Chart colors per theme (SVG attributes can't use CSS variables).
+const CHART = {
+  light: {
+    lines: ["#518123", "#88B43A", "#A47B12"], bars: ["#B6D455", "#518123"], dot: "#518123",
+    tick: "#5f6b5a", axis: "#cfd8c6", cursor: "rgba(0,0,0,.04)",
+    tooltip: { background: "#fff", border: "1px solid #dde5d3", borderRadius: 10, color: "#1b2614", fontFamily: "Poppins" },
+  },
+  dark: {
+    lines: ["#B6D455", "#8ABB63", "#DFF3A0"], bars: ["#DFF3A0", "#88B43A"], dot: "#fff",
+    tick: "#9aa894", axis: "#3a463a", cursor: "rgba(255,255,255,.04)",
+    tooltip: { background: "#1f2820", border: "1px solid #2f3b2f", borderRadius: 10, color: "#eef3e6", fontFamily: "Poppins" },
+  },
+};
+export const useChart = () => CHART[useTheme()];
 
 /* ---------- hooks ---------- */
 
@@ -80,8 +116,8 @@ export function usePoll(fn, deps, ms = 10000) {
 export function useRoute() {
   const parse = () => {
     const [path, query = ""] = window.location.hash.replace(/^#\/?/, "").split("?");
-    const [page = "home", sub] = path.split("/");
-    return { page: page || "home", sub, params: Object.fromEntries(new URLSearchParams(query)) };
+    const [page = "dashboard", sub] = path.split("/");
+    return { page: page || "dashboard", sub, params: Object.fromEntries(new URLSearchParams(query)) };
   };
   const [route, setRoute] = useState(parse);
   useEffect(() => {
