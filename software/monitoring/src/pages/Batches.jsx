@@ -4,11 +4,15 @@ import { Dialog, Empty, Icon, Skel } from "../ui.jsx";
 import { dayOf, fullDate, longDate, usePoll } from "../lib.js";
 import { BatchActions } from "./Dashboard.jsx";
 
-export const STATUS_LABEL = { growing: "Monitoring", transplanted: "Transplanted", stopped: "Stopped" };
+// "Batch 6" -> 6 (same numbering as the server).
+const num = (b) => Number(/^Batch (\d+)$/.exec(b.name)?.[1]) || 0;
+
+export const STATUS_LABEL ={ growing: "Monitoring", transplanted: "Transplanted", stopped: "Stopped" };
 
 // Ended batches: deletable right away when nothing was recorded, otherwise 30 days after they ended
 // (the server enforces the same rule and sends the unlock date as deletable_from).
-function DeleteBatch({ batch, onDone }) {
+// latest: the highest-numbered batch, whose name the next batch reuses once it is deleted.
+function DeleteBatch({ batch, latest, onDone }) {
   const [ask, setAsk] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
@@ -31,7 +35,7 @@ function DeleteBatch({ batch, onDone }) {
             {batch.empty
               ? "Nothing was recorded for this batch."
               : "Its sensor readings, misting log, alerts and photos are deleted for good."}
-            {" "}The name {batch.name} will be used by the next batch you start.
+            {latest && <>{" "}The name {batch.name} will be used by the next batch you start.</>}
           </p>
           {err && <div className="err">{err}</div>}
           <div className="modal-actions">
@@ -48,6 +52,7 @@ export default function Batches() {
   const { data, error, reload } = usePoll("batches", () => api.batches(), 15000);
   if (error && !data) return <div className="card"><Empty icon="cloud_off">Cannot load batches ({error.message}).</Empty></div>;
   if (!data) return <><Skel /><Skel /></>;
+  const top = Math.max(0, ...data.map(num));
 
   return (
     <>
@@ -77,7 +82,7 @@ export default function Batches() {
                 : (
                   <div className="batch-actions">
                     <a className="btn ghost" href={`#/records/${b.id}`}>View record <Icon name="arrow_forward" /></a>
-                    <DeleteBatch batch={b} onDone={reload} />
+                    <DeleteBatch batch={b} latest={num(b) === top} onDone={reload} />
                   </div>
                 )}
             </div>

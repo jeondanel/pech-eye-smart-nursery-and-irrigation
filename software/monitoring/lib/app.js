@@ -275,14 +275,13 @@ app.get("/api/batches", h(async (_req, res) => {
   }));
 }));
 
-// "Start monitoring": batches are named Batch 1, Batch 2, ... using the lowest free number,
-// so a deleted batch's name is reused and the list has no gaps.
+// "Start monitoring": batches are named Batch 1, Batch 2, ... one above the highest existing number.
+// Deleting the latest batch frees its name for the next one; deleting an older batch never
+// brings its number back (Batch 1 deleted while Batch 5 exists -> next is Batch 6).
 app.post("/api/batches", h(async (_req, res) => {
   if (await activeBatch()) return res.status(409).json({ error: "A batch is already being monitored." });
-  const used = new Set(ok(await sb.from("batches").select("name")).map((b) => Number(/^Batch (\d+)$/.exec(b.name)?.[1])));
-  let n = 1;
-  while (used.has(n)) n++;
-  res.json(ok(await sb.from("batches").insert({ name: `Batch ${n}` }).select().single()));
+  const nums = ok(await sb.from("batches").select("name")).map((b) => Number(/^Batch (\d+)$/.exec(b.name)?.[1]) || 0);
+  res.json(ok(await sb.from("batches").insert({ name: `Batch ${Math.max(0, ...nums) + 1}` }).select().single()));
 }));
 
 // Ended batches can be deleted: right away if nothing was recorded (no readings, no photos),
