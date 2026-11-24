@@ -237,11 +237,17 @@ a, img { -webkit-user-drag: none; }
 .inline-ic { font-size: 1.1em; vertical-align: -3px; }
 
 /* Install-the-app card (bottom of the Dashboard) */
-.install { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
-.install-ic { font-size: 30px; color: var(--lime); }
-.install > div { display: grid; gap: 3px; flex: 1 1 240px; }
-.install b { font-weight: 600; }
-@media (max-width: 719px) { .install .btn { width: 100%; } }
+.install-row { display: flex; align-items: center; gap: 14px; width: 100%; padding: 12px 14px; text-align: left;
+  font: inherit; color: var(--text); cursor: pointer; transition: background .15s; }
+.install-row:hover { background: var(--surface-2); }
+.install-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.install-tile { width: 44px; height: 44px; border-radius: 10px; flex: none; display: grid; place-items: center;
+  background: var(--ok-bg); color: var(--lime); }
+.install-tile .ms { font-size: 22px; }
+.install-text { display: grid; gap: 1px; flex: 1; min-width: 0; }
+.install-text b { font-weight: 600; font-size: .95rem; }
+.install-text small { color: var(--muted); font-size: .76rem; }
+.install-go { color: var(--muted); font-size: 22px; }
 @media (max-width: 719px) { .camctl .btn { width: 100%; } }
 
 /* ---------- Pictures + tray ---------- */

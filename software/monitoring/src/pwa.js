@@ -22,11 +22,18 @@ export function initPwa() {
   window.addEventListener("appinstalled", () => { deferred = null; notify(); });
 }
 
+// mode (null once installed):
+//   "prompt"   our Install button opens the browser's install dialog
+//   "ios"      iPhone/iPad: Share -> Add to Home Screen
+//   "manual"   the browser hasn't offered the dialog (yet, or at all): use the browser menu
+//   "insecure" opened over plain http (e.g. a LAN IP), where no browser allows installing
 function state() {
   const installed = isInstalled();
-  const ios = !installed && isIOS();
-  // "ios" = show the Add to Home Screen steps; "prompt" = our button opens the install dialog.
-  const mode = installed ? null : deferred ? "prompt" : ios ? "ios" : null;
+  const mode = installed ? null
+    : deferred ? "prompt"
+    : isIOS() ? "ios"
+    : !window.isSecureContext ? "insecure"
+    : "manual";
   return { installed, mode };
 }
 

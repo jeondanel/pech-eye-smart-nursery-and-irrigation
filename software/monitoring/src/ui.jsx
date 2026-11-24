@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { applyTheme, dayOf, useNow, useTheme } from "./lib.js";
 import { snoozeInstall, usePwa } from "./pwa.js";
 
@@ -98,9 +98,12 @@ export function Dialog({ icon, tone = "", title, children, onClose }) {
   );
 }
 
-const IosSteps = () => (
-  <p className="muted">
-    Tap <Icon name="ios_share" className="inline-ic" /> <b>Share</b> in Safari, then <b>Add to Home Screen</b>.
+// How to install when our button can't open the browser's install dialog.
+const InstallSteps = ({ mode }) => (
+  <p className="muted small">
+    {mode === "ios" && <>Tap <Icon name="ios_share" className="inline-ic" /> <b>Share</b> in Safari, then <b>Add to Home Screen</b>.</>}
+    {mode === "manual" && <>Open the browser menu <Icon name="more_vert" className="inline-ic" /> and choose <b>Install app</b> or <b>Add to Home screen</b>.</>}
+    {mode === "insecure" && <>Installing needs the secure (https) address of the dashboard. Open the online site, then install it from there.</>}
   </p>
 );
 
@@ -112,7 +115,7 @@ export function InstallPopup({ onClose }) {
   return (
     <Dialog icon="install_mobile" title="Install Pech-Eye" onClose={later}>
       <p className="muted">Add the dashboard to your home screen to open it like an app, full screen and one tap away.</p>
-      {mode === "ios" && <IosSteps />}
+      {mode !== "prompt" && <InstallSteps mode={mode} />}
       <div className="modal-actions">
         <button className="btn ghost" onClick={later}>Not now</button>
         {mode === "prompt"
@@ -123,19 +126,30 @@ export function InstallPopup({ onClose }) {
   );
 }
 
-// Card at the bottom of the Dashboard; hidden once installed or when the browser can't install.
+// Card at the very bottom of the Dashboard; hidden only once the app is installed (opened from the icon).
+// One tappable row: opens the browser's install dialog, or a pop-up with the steps.
 export function InstallCard() {
   const { mode, install } = usePwa();
+  const [steps, setSteps] = useState(false);
+  const close = useCallback(() => setSteps(false), []);
   if (!mode) return null;
   return (
-    <div className="card install">
-      <Icon name="install_mobile" className="install-ic" />
-      <div>
-        <b>Install the Pech-Eye app</b>
-        {mode === "ios" ? <IosSteps /> : <p className="muted small">Open the dashboard from your home screen or desktop, like an app.</p>}
-      </div>
-      {mode === "prompt" && <button className="btn" onClick={install}><Icon name="download" />Install</button>}
-    </div>
+    <>
+      <button className="card install-row" onClick={() => (mode === "prompt" ? install() : setSteps(true))}>
+        <span className="install-tile"><Icon name="smartphone" /></span>
+        <span className="install-text">
+          <b>Install PWA</b>
+          <small>Install app for iOS &amp; Android</small>
+        </span>
+        <Icon name="chevron_right" className="install-go" />
+      </button>
+      {steps && (
+        <Dialog icon="install_mobile" title="Install Pech-Eye" onClose={close}>
+          <InstallSteps mode={mode} />
+          <button className="btn block" autoFocus onClick={close}>OK</button>
+        </Dialog>
+      )}
+    </>
   );
 }
 
