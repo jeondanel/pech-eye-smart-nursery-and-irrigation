@@ -77,7 +77,9 @@ app.post("/api/ingest/image", deviceAuth, h(async (req, res) => {
   const file = `${batch.id}/${ts.replace(/[:.]/g, "-")}.jpg`;
   const up = await sb.storage.from(BUCKET).upload(file, buf, { contentType: "image/jpeg", cacheControl: "31536000" }); // each photo has a unique name and never changes
   if (up.error) throw new Error(up.error.message);
-  const row = ok(await sb.from("images").insert({ batch_id: batch.id, ts, file }).select().single());
+  // ?source=scheduled (12 h schedule) | manual (dashboard "Take photo"); camera_poll() relies on it.
+  const source = req.query.source === "scheduled" ? "scheduled" : "manual";
+  const row = ok(await sb.from("images").insert({ batch_id: batch.id, ts, file, source }).select().single());
   // Any new photo satisfies a pending "take a photo now" request from the dashboard.
   // Errors are only logged so a missing table never loses an upload.
   const [cr, cs] = await Promise.all([
@@ -107,8 +109,8 @@ app.post("/api/ingest/image", deviceAuth, h(async (req, res) => {
   })());
 }));
 
-// The camera wakes every few minutes and asks whether the dashboard requested a photo.
-// ?every=<seconds> tells us its check-in interval so the dashboard can show the expected wait.
+// Legacy check-in for older camera firmware. Current firmware asks Supabase directly
+// (camera_poll() in supabase/schema.sql) so "Take photo" is picked up within seconds.
 app.get("/api/ingest/camera/poll", deviceAuth, h(async (req, res) => {
   const every = num(req.query.every);
   ok(await sb.from("camera_status").upsert({ id: 1, last_seen: new Date().toISOString(), ...(every ? { check_seconds: every } : {}) }));

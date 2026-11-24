@@ -1,7 +1,14 @@
 -- PECH-EYE database (Supabase / Postgres).
--- Fresh project: Dashboard -> SQL Editor -> New query -> paste this whole file -> Run.
--- Existing project: run migrate.sql instead.
--- Then: Storage -> New bucket -> name: tray-images -> tick "Public bucket" -> Create.
+-- Dashboard -> SQL Editor -> New query -> paste this whole file -> Run.
+-- WARNING: drops and recreates every table, so ALL existing data is deleted.
+-- Then: Storage -> New bucket -> name: tray-images -> tick "Public bucket" -> Create
+-- (or, if it exists, empty it: Storage -> tray-images -> select all -> Delete).
+
+drop table if exists capture_requests, camera_status, images, readings,
+  actuator_runs, alerts, weather, batches cascade;
+drop function if exists batch_stats(bigint);
+drop function if exists weather_stats(timestamptz, timestamptz);
+drop function if exists camera_poll(int);
 
 -- One growing cycle of a seedling tray, from sowing to transplanting.
 create table batches (
@@ -69,7 +76,8 @@ create table images (
   occupied_cells int,
   total_cells int,
   canopy_pct real,
-  ready boolean
+  ready boolean,
+  source text              -- scheduled (every 12 h from batch start) | manual (dashboard "Take photo")
 );
 create index on images (batch_id, ts);
 
@@ -126,3 +134,38 @@ language sql stable as $$
     'avg_rain_chance', avg(rain_chance_24h), 'max_rain_1h', max(rain_1h))
   from weather where ts between p_from and p_to;
 $$;
+
+-- The camera calls this every few seconds (Supabase REST, publishable/anon key) and gets back
+-- 'scheduled', 'manual' or null. It also marks the camera online for the dashboard.
+--   scheduled: every 12 h counted from "Start monitoring" (none in the first 12 h);
+--              manual photos don't move this schedule.
+--   manual:    a "Take photo" request made during the current batch is waiting.
+-- Nothing is due while no batch is being monitored.
+create or replace function camera_poll(p_every int default null) returns text
+language plpgsql security definer set search_path = public as $fn$
+declare
+  b batches;
+  slot_start timestamptz;
+begin
+  insert into camera_status (id, last_seen, check_seconds) values (1, now(), p_every)
+  on conflict (id) do update
+    set last_seen = excluded.last_seen,
+        check_seconds = coalesce(excluded.check_seconds, camera_status.check_seconds)
+    where camera_status.last_seen is null or camera_status.last_seen < now() - interval '30 seconds';
+
+  select * into b from batches where status = 'growing' limit 1;
+  if not found then return null; end if;
+
+  slot_start := b.started_at + floor(extract(epoch from now() - b.started_at) / 43200) * interval '12 hours';
+  if slot_start > b.started_at and not exists (
+       select 1 from images where batch_id = b.id and source = 'scheduled' and ts >= slot_start) then
+    return 'scheduled';
+  end if;
+
+  if exists (select 1 from capture_requests where fulfilled_at is null and requested_at >= b.started_at) then
+    return 'manual';
+  end if;
+  return null;
+end $fn$;
+revoke all on function camera_poll(int) from public;
+grant execute on function camera_poll(int) to anon;

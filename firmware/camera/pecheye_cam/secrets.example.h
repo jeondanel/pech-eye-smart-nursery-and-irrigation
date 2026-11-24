@@ -4,7 +4,11 @@
 
 #define SECRET_WIFI_SSID   "YOUR_WIFI_NAME"
 #define SECRET_WIFI_PASS   "YOUR_WIFI_PASSWORD"
-// IP of the PC/server running software/monitoring (same Wi-Fi). Find with `ipconfig`.
-#define SECRET_SERVER_URL  "http://192.168.1.50:3001"
-// Must equal DEVICE_API_KEY in the server .env.local
+// Dashboard server (photos are uploaded here), e.g. "https://your-app.vercel.app"
+#define SECRET_SERVER_URL  "https://YOUR_APP.vercel.app"
+// Must equal DEVICE_API_KEY on the server
 #define SECRET_API_KEY     "change-me"
+// Supabase -> Project Settings -> API Keys. Use the PUBLISHABLE (or legacy "anon") key,
+// NOT the secret / service_role key. It can only call camera_poll().
+#define SECRET_SUPABASE_URL "https://YOUR_PROJECT.supabase.co"
+#define SECRET_SUPABASE_KEY "sb_publishable_..."

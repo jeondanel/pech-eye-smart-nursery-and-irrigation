@@ -9,7 +9,8 @@
   Credentials live in secrets.h (copy secrets.example.h -> secrets.h).
 
   What goes to the server (software/monitoring):
-    POST /api/ingest/reading  every 5 min: climate, soil, reservoir, relay states
+    POST /api/ingest/reading  every 6 h (also at boot and when the float switch changes):
+                              climate, soil, reservoir, relay states
     POST /api/ingest/run      each time a relay switches OFF: device, seconds ON, who started it
     POST /api/ingest/alert    reservoir LOW / restored, safety stops, boot
 */
@@ -25,9 +26,6 @@
 #include "secrets.h"
 
 // ===== SETTINGS =====
-// Camera node IP on the LAN (no http://). Shown by /camera.
-const char* CAMERA_IP = "192.168.100.96";
-
 // Set to true ONLY after checking float-switch behavior and filling the reservoir.
 const bool ENABLE_WET_ACTUATORS = true;
 
@@ -52,7 +50,7 @@ constexpr uint32_t PUMP_TEST_MS     = 10UL * 1000UL;
 constexpr uint32_t TELEGRAM_POLL_MS = 2300;
 constexpr uint32_t WIFI_RETRY_MS    = 15000;
 constexpr uint32_t LCD_UPDATE_MS    = 2000;
-constexpr uint32_t REPORT_MS        = 5UL * 60UL * 1000UL;  // reading -> server
+constexpr uint32_t REPORT_MS        = 6UL * 60UL * 60UL * 1000UL;  // reading -> server every 6 h
 
 const String BOT_TOKEN        = SECRET_BOT_TOKEN;
 const String TELEGRAM_CHAT_ID = SECRET_CHAT_ID;
@@ -305,7 +303,6 @@ void commandReceived(String cmd) {
                  "/openlight - 5 minute light\n"
                  "/openmist - 5 minute mist\n"
                  "/openpump - 10 second pump\n"
-                 "/camera - Camera URL\n"
                  "/stopall - Turn everything OFF");
   } else if (cmd == "/ping") {
     sendTelegram("PECH-EYE controller online. IP: " + WiFi.localIP().toString());
@@ -326,8 +323,6 @@ void commandReceived(String cmd) {
   } else if (cmd == "/stopall" || cmd == "/stop") {
     stopAll("telegram");
     sendTelegram("ALL ACTUATORS OFF.");
-  } else if (cmd == "/camera") {
-    sendTelegram(String("Camera (same LAN): http://") + CAMERA_IP + "/\nSnapshot: http://" + CAMERA_IP + "/capture");
   } else {
     sendTelegram("Unknown command. Send /help.");
   }

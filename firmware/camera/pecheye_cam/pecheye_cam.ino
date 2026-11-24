@@ -1,11 +1,12 @@
 /*
  * PECH-EYE camera node: GOOUUU ESP32-S3-CAM V1.5 + OV5640
  *
- * Always on (no deep sleep):
- *   - Live preview page on the LAN:  http://<camera-ip>/   and a single JPEG at /capture
- *     (the controller's Telegram /camera command links here)
- *   - Uploads a tray photo to the dashboard every CAPTURE_INTERVAL_HOURS, and once at boot
- *   - Every CHECK_INTERVAL_MINUTES asks the dashboard whether someone pressed "Take photo"
+ * Always on (wall powered) but idle: it only takes a photo when Supabase says one is due.
+ *   - "scheduled": every 12 h counted from "Start monitoring" (first photo 12 h after the start).
+ *     Manual photos don't reset this schedule. Nothing is taken while no batch is monitored.
+ *   - "manual":    someone pressed "Take photo" on the dashboard (picked up within CHECK_SECONDS).
+ * The decision is made by camera_poll() in software/monitoring/supabase/schema.sql, so a
+ * reboot or power cut never shifts the schedule. Photos are uploaded to the dashboard server.
  *
  * Credentials live in secrets.h (copy secrets.example.h -> secrets.h).
  *
@@ -15,20 +16,20 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
-#include <WebServer.h>
 #include "esp_camera.h"
 #include "secrets.h"
 
 // ---- SETTINGS ----
-const uint32_t CAPTURE_INTERVAL_HOURS = 12;  // scheduled dashboard photo
-const uint32_t CHECK_INTERVAL_MINUTES = 1;   // how often to ask for "Take photo" requests (0 = never)
-const uint32_t RETRY_MINUTES          = 15;  // failed upload? try again this soon
+const uint32_t CHECK_SECONDS = 3;   // how often to ask Supabase whether a photo is due
+const uint32_t RETRY_SECONDS = 60;  // failed upload? wait this long before trying again
 // ------------------
 
-const char* WIFI_SSID  = SECRET_WIFI_SSID;
-const char* WIFI_PASS  = SECRET_WIFI_PASS;
-const char* SERVER_URL = SECRET_SERVER_URL;
-const char* API_KEY    = SECRET_API_KEY;
+const char* WIFI_SSID    = SECRET_WIFI_SSID;
+const char* WIFI_PASS    = SECRET_WIFI_PASS;
+const char* SERVER_URL   = SECRET_SERVER_URL;
+const char* API_KEY      = SECRET_API_KEY;
+const char* SUPABASE_URL = SECRET_SUPABASE_URL;
+const char* SUPABASE_KEY = SECRET_SUPABASE_KEY;
 
 // GOOUUU ESP32-S3-CAM V1.5
 #define PWDN_GPIO_NUM  -1
@@ -48,57 +49,11 @@ const char* API_KEY    = SECRET_API_KEY;
 #define HREF_GPIO_NUM   7
 #define PCLK_GPIO_NUM  13
 
-WebServer server(80);
 bool cameraOk = false;
-uint32_t nextCaptureAt = 0;   // millis() of the next scheduled upload (0 = right away)
-uint32_t lastCheck = 0;
+uint32_t nextCheckAt = 0;      // millis() of the next Supabase check
 uint32_t lastWifiAttempt = 0;
-
-const char webpage[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <title>PECH-EYE Camera</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { background: #111; color: white; text-align: center; font-family: Arial; margin: 20px; }
-    img { width: 100%; max-width: 1100px; height: auto; border: 2px solid #555; }
-    button, select { padding: 12px; margin: 8px; font-size: 15px; }
-  </style>
-</head>
-<body>
-  <h2>PECH-EYE OV5640 CAMERA</h2>
-  <p>Live image preview</p>
-  <img id="camera" src="/capture">
-  <br>
-  <button onclick="refreshImage()">Refresh Image</button>
-  <p>Auto-refresh interval</p>
-  <select id="interval" onchange="changeInterval()">
-    <option value="500">0.5 seconds</option>
-    <option value="1000" selected>1 second</option>
-    <option value="2000">2 seconds</option>
-    <option value="5000">5 seconds</option>
-  </select>
-  <p id="status">Camera ready</p>
-  <script>
-    let timer;
-    function refreshImage() {
-      const img = document.getElementById("camera");
-      const status = document.getElementById("status");
-      status.innerText = "Capturing image...";
-      img.onload = () => { status.innerText = "Image captured successfully"; };
-      img.onerror = () => { status.innerText = "Capture failed. Retrying..."; };
-      img.src = "/capture?t=" + Date.now();
-    }
-    function changeInterval() {
-      clearInterval(timer);
-      timer = setInterval(refreshImage, Number(document.getElementById("interval").value));
-    }
-    changeInterval();
-  </script>
-</body>
-</html>
-)rawliteral";
+WiFiClientSecure pollTls;      // kept open between checks so each one is quick
+HTTPClient pollHttp;
 
 // ---------- Camera ----------
 
@@ -133,19 +88,6 @@ void maintainWifi() {
   Serial.println("Reconnecting Wi-Fi...");
   WiFi.disconnect();
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-}
-
-// ---------- Local web page ----------
-
-void handleRoot() { server.send_P(200, "text/html", webpage); }
-
-void handleCapture() {
-  camera_fb_t* fb = esp_camera_fb_get();
-  if (!fb) { server.send(500, "text/plain", "Camera capture failed"); return; }
-  server.setContentLength(fb->len);
-  server.send(200, "image/jpeg", "");
-  server.client().write(fb->buf, fb->len);
-  esp_camera_fb_return(fb);
 }
 
 // ---------- Dashboard upload ----------
@@ -190,34 +132,40 @@ int postJpeg(const char* path, const uint8_t* buf, size_t len) {
   return status.length() > 12 ? status.substring(9, 12).toInt() : -11;
 }
 
-bool uploadPhoto() {
+// source = "scheduled" | "manual"; the server stores it with the photo.
+bool uploadPhoto(const String& source) {
   if (!cameraOk || WiFi.status() != WL_CONNECTED) return false;
   // Drop a stale buffered frame so the upload is a fresh picture.
   camera_fb_t* old = esp_camera_fb_get();
   if (old) esp_camera_fb_return(old);
   camera_fb_t* fb = esp_camera_fb_get();
   if (!fb) { Serial.println("Capture failed"); return false; }
-  int code = postJpeg("/api/ingest/image", fb->buf, fb->len);
-  Serial.printf("Uploaded %u bytes -> HTTP %d\n", (unsigned)fb->len, code);
+  String path = "/api/ingest/image?source=" + source;
+  int code = postJpeg(path.c_str(), fb->buf, fb->len);
+  Serial.printf("Uploaded %u bytes (%s) -> HTTP %d\n", (unsigned)fb->len, source.c_str(), code);
   esp_camera_fb_return(fb);
   return code == 200;
 }
 
-// Asks the server whether someone pressed "Take photo" on the dashboard.
-bool photoRequested() {
-  String url = String(SERVER_URL) + "/api/ingest/camera/poll?every=" + String(CHECK_INTERVAL_MINUTES * 60);
-  WiFiClient plain;
-  WiFiClientSecure secure;
-  secure.setInsecure();
-  HTTPClient http;
-  http.setTimeout(10000);
-  if (url.startsWith("https://")) http.begin(secure, url); else http.begin(plain, url);
-  http.addHeader("x-api-key", API_KEY);
-  int code = http.GET();
-  String body = code == 200 ? http.getString() : "";
-  http.end();
-  if (code != 200) Serial.printf("Poll -> HTTP %d\n", code);
-  return body.indexOf("\"capture\":true") >= 0;
+// ---------- Supabase check ----------
+
+// Calls the camera_poll() database function. Returns "scheduled", "manual" or "" (nothing due).
+String photoDue() {
+  String url = SUPABASE_URL;
+  while (url.endsWith("/")) url.remove(url.length() - 1);
+  url += "/rest/v1/rpc/camera_poll";
+  pollHttp.setReuse(true);
+  pollHttp.setTimeout(8000);
+  if (!pollHttp.begin(pollTls, url)) return "";
+  pollHttp.addHeader("apikey", SUPABASE_KEY);
+  pollHttp.addHeader("Content-Type", "application/json");
+  int code = pollHttp.POST("{\"p_every\":" + String(CHECK_SECONDS) + "}");
+  String body = code == 200 ? pollHttp.getString() : "";
+  pollHttp.end();
+  if (code != 200) { Serial.printf("Supabase check -> HTTP %d\n", code); return ""; }
+  if (body.indexOf("scheduled") >= 0) return "scheduled";
+  if (body.indexOf("manual") >= 0) return "manual";
+  return "";
 }
 
 // ---------- Main ----------
@@ -228,6 +176,7 @@ void setup() {
   Serial.println("\nPECH-EYE CAMERA");
 
   cameraOk = initCamera();
+  pollTls.setInsecure();
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);   // modem sleep stalls large uploads
@@ -237,36 +186,18 @@ void setup() {
   lastWifiAttempt = millis();
   Serial.print("Wi-Fi");
   for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) { delay(500); Serial.print("."); }
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("Live preview: http://");
-    Serial.println(WiFi.localIP());
-  }
-
-  server.on("/", handleRoot);
-  server.on("/capture", HTTP_GET, handleCapture);
-  server.begin();
+  Serial.println(WiFi.status() == WL_CONNECTED ? " connected" : " not connected yet");
 }
 
 void loop() {
-  server.handleClient();
   maintainWifi();
-  if (WiFi.status() != WL_CONNECTED) { delay(10); return; }
+  if (WiFi.status() != WL_CONNECTED || (int32_t)(millis() - nextCheckAt) < 0) { delay(20); return; }
 
-  // Scheduled photo (first one right after boot).
-  if ((int32_t)(millis() - nextCaptureAt) >= 0) {
-    Serial.println("Scheduled photo");
-    bool ok = uploadPhoto();
-    nextCaptureAt = millis() + (ok ? CAPTURE_INTERVAL_HOURS * 3600000UL : RETRY_MINUTES * 60000UL);
+  String due = photoDue();
+  nextCheckAt = millis() + CHECK_SECONDS * 1000UL;
+  if (due.length()) {
+    Serial.println("Photo due: " + due);
+    // On failure the photo stays due in Supabase, so it is simply retried after RETRY_SECONDS.
+    if (!uploadPhoto(due)) nextCheckAt = millis() + RETRY_SECONDS * 1000UL;
   }
-
-  // Dashboard "Take photo" request.
-  if (CHECK_INTERVAL_MINUTES > 0 && millis() - lastCheck >= CHECK_INTERVAL_MINUTES * 60000UL) {
-    lastCheck = millis();
-    if (photoRequested()) {
-      Serial.println("Photo requested from the dashboard");
-      uploadPhoto();   // if it fails the request stays pending and is retried next check
-    }
-  }
-  delay(2);
 }
