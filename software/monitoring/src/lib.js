@@ -68,16 +68,6 @@ export function rainStatus(w) {
   return { text: "No rain expected", tone: "" };
 }
 
-// Same rules as the controller's irrigation decision. Not shown on the dashboard for now.
-export function irrigationDecision(w, r) {
-  if (!w || !r) return { tone: "grey", icon: "hourglass_top", title: "Irrigation decision pending", text: "Waiting for weather and sensor data." };
-  if (w.rain_chance_24h >= 50 || w.rain_1h > 0.5)
-    return { tone: "info", icon: "rainy", title: "Irrigation deferred: rain expected", text: `Rain chance ${Math.round(w.rain_chance_24h ?? 0)}% in the next 24 h. Outdoor irrigation is locked out.` };
-  if (r.temperature > 32 && r.humidity < 60)
-    return { tone: "warn", icon: "heat", title: "Heat stress: misting recommended", text: `Chamber is ${fmt(r.temperature, "°C")} at ${fmt(r.humidity, "%")} humidity.` };
-  return { tone: "ok", icon: "check_circle", title: "Irrigation permitted", text: "Clear weather. Normal irrigation schedule allowed." };
-}
-
 /* ---------- theme (light is the default) ---------- */
 
 const THEME_KEY = "pecheye_theme";

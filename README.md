@@ -109,33 +109,17 @@ Primary functions:
 ## 📂 Repository Structure
 
 ```text
-pech-eye-smart-agriculture-system/
+pech-eye-smart-nursery-and-irrigation/
 │
 ├── firmware/
-│   ├── nursery/
-│   ├── grow-bed/
-│   ├── camera/
-│   └── shared/
+│   ├── controller/pecheye_controller/  ESP32-S3: sensors, relays, LCD, Telegram bot, 6 h readings
+│   └── camera/pecheye_cam/             ESP32-S3-CAM: tray photo every 12 h + on-demand "Take photo"
 │
 ├── software/
-│   ├── monitoring/
-│   ├── image-processing/
-│   └── api-integration/
-│
-├── hardware/
-│   ├── wiring-diagrams/
-│   ├── pinout/
-│   └── components/
-│
-├── documentation/
-│   ├── system-architecture/
-│   ├── technical-documentation/
-│   └── user-manual/
-│
-├── tests/
-│   ├── sensor-tests/
-│   ├── actuator-tests/
-│   └── integration-tests/
+│   └── monitoring/                     Dashboard (React + Vite) and API (Express on Vercel)
+│       ├── api/  lib/                  server: device ingest, batches, tray analysis, weather, Telegram
+│       ├── src/                        web dashboard (installable PWA)
+│       └── supabase/schema.sql         database: run once in Supabase SQL Editor (wipes existing data)
 │
 ├── .gitignore
 └── README.md

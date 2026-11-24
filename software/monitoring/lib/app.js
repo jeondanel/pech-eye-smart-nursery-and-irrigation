@@ -109,14 +109,8 @@ app.post("/api/ingest/image", deviceAuth, h(async (req, res) => {
   })());
 }));
 
-// Legacy check-in for older camera firmware. Current firmware asks Supabase directly
-// (camera_poll() in supabase/schema.sql) so "Take photo" is picked up within seconds.
-app.get("/api/ingest/camera/poll", deviceAuth, h(async (req, res) => {
-  const every = num(req.query.every);
-  ok(await sb.from("camera_status").upsert({ id: 1, last_seen: new Date().toISOString(), ...(every ? { check_seconds: every } : {}) }));
-  const pending = ok(await sb.from("capture_requests").select("id").is("fulfilled_at", null).limit(1));
-  res.json({ capture: pending.length > 0 });
-}));
+// The camera doesn't check in here: it calls camera_poll() in Supabase directly
+// (see supabase/schema.sql), so "Take photo" is picked up within seconds.
 
 const bool = (v) => (typeof v === "boolean" ? v : null);
 
@@ -188,9 +182,7 @@ async function cameraState() {
   return { lastSeen: s?.last_seen || null, checkSeconds: s?.check_seconds || null, pending: ok(pending)[0] || null };
 }
 
-app.get("/api/camera", h(async (_req, res) => res.json(await cameraState())));
-
-// "Take a photo now": queue a request; the camera picks it up on its next check-in.
+// "Take a photo now": queue a request; the camera picks it up within a few seconds.
 app.post("/api/camera/capture", h(async (_req, res) => {
   const st = await cameraState();
   if (!st.pending) ok(await sb.from("capture_requests").insert({}));
@@ -336,11 +328,6 @@ async function buildSummary(batch, endedAt) {
     final_analysis: ok(last)[0] || null,
   };
 }
-
-app.get("/api/batches/:id/summary", h(async (req, res) => {
-  const b = ok(await sb.from("batches").select("*").eq("id", req.params.id).single());
-  res.json(b.summary || (await buildSummary(b, b.ended_at || new Date().toISOString())));
-}));
 
 // Ends the batch (transplanted, or stopped early): freezes the logs and stores the summary.
 async function closeBatch(req, res, status) {
