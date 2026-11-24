@@ -72,7 +72,7 @@ function SensorPage({ cfg, data, days, setDays }) {
     <>
       <div className="page-head">
         <h2>{cfg.title} History</h2>
-        <p className="muted">Historical readings of {noun} inside the nursery chamber.</p>
+        <p className="muted small">Inside the nursery chamber.</p>
       </div>
       <div className="stats four">
         <StatBox label={`Current ${noun}`} value={fmt(current?.[cfg.key], ` ${cfg.unit}`)} sub={current ? `as of ${when(current.ts)}` : "No data"} />
@@ -97,7 +97,7 @@ function SensorPage({ cfg, data, days, setDays }) {
 
       <div className="page-head">
         <h2>Historical Readings</h2>
-        <p className="muted">View historical {noun} readings inside the nursery chamber and filter the records by selected time period.</p>
+        <p className="muted small">Filter by time period.</p>
       </div>
       <RangePicker days={days} setDays={setDays} from={data.from} />
 
@@ -155,7 +155,7 @@ function ReservoirPage({ data, days, setDays }) {
     <>
       <div className="page-head">
         <h2>Mist Reservoir</h2>
-        <p className="muted">Historical readings of mist reservoir levels inside the nursery chamber.</p>
+        <p className="muted small">Mist reservoir level and water use.</p>
       </div>
       <div className="stats four">
         <StatBox label="Current reservoir level" value={last ? (last.reservoir_low ? "LOW" : "OK") : "—"} sub={last ? `Float switch, ${when(last.ts)}` : "No data"} />
@@ -185,7 +185,7 @@ function ReservoirPage({ data, days, setDays }) {
 
       <div className="page-head">
         <h2>Historical Readings</h2>
-        <p className="muted">View historical mist reservoir level readings inside the nursery chamber and filter the records by selected time period.</p>
+        <p className="muted small">Misting runs, filtered by time period.</p>
       </div>
       <RangePicker days={days} setDays={setDays} from={data.from} />
 
@@ -213,7 +213,7 @@ function ReservoirPage({ data, days, setDays }) {
 
 export default function SensorHistory({ kind }) {
   const [days, setDays] = useState(7);
-  const { data, error } = usePoll(() => api.history(days), [days], 60000);
+  const { data, error } = usePoll(`history:${days}`, () => api.history(days), 60000);
   const cfg = SENSORS[kind];
 
   return (

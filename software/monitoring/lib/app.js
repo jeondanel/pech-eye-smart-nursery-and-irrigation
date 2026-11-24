@@ -75,7 +75,7 @@ app.post("/api/ingest/image", deviceAuth, h(async (req, res) => {
     return res.json({ ok: true, skipped: "no batch is being monitored" });
   }
   const file = `${batch.id}/${ts.replace(/[:.]/g, "-")}.jpg`;
-  const up = await sb.storage.from(BUCKET).upload(file, buf, { contentType: "image/jpeg" });
+  const up = await sb.storage.from(BUCKET).upload(file, buf, { contentType: "image/jpeg", cacheControl: "31536000" }); // each photo has a unique name and never changes
   if (up.error) throw new Error(up.error.message);
   const row = ok(await sb.from("images").insert({ batch_id: batch.id, ts, file }).select().single());
   // Any new photo satisfies a pending "take a photo now" request from the dashboard.
@@ -120,11 +120,16 @@ const bool = (v) => (typeof v === "boolean" ? v : null);
 
 // Controller snapshot. JSON {temperature, humidity, soil_raw, soil_moisture, reservoir_low,
 // mist_on, light_on, pump_on}; every field optional.
+// Only stored while a batch is being monitored; readings between batches are dropped.
 app.post("/api/ingest/reading", deviceAuth, h(async (req, res) => {
   const b = await jsonBody(req);
   const batch = await activeBatch();
+  if (!batch) {
+    await ensureWeather(); // the outdoor weather log keeps growing between batches
+    return res.json({ ok: true, skipped: "no batch is being monitored" });
+  }
   ok(await sb.from("readings").insert({
-    batch_id: batch?.id ?? null, temperature: num(b.temperature), humidity: num(b.humidity),
+    batch_id: batch.id, temperature: num(b.temperature), humidity: num(b.humidity),
     soil_raw: num(b.soil_raw), soil_moisture: num(b.soil_moisture), reservoir_low: bool(b.reservoir_low),
     mist_on: bool(b.mist_on), light_on: bool(b.light_on), pump_on: bool(b.pump_on),
   }));
@@ -200,12 +205,8 @@ app.get("/api/dashboard", h(async (req, res) => {
     ? ok(await sb.from("batches").select("*").eq("id", req.query.batch).single())
     : await activeBatch();
   if (!batch) {
-    // No batch yet: only the chamber climate and the outdoor weather.
-    const [lr, weather] = await Promise.all([
-      sb.from("readings").select("*").order("ts", { ascending: false }).limit(1),
-      ensureWeather(),
-    ]);
-    return res.json({ batch: null, latestReading: ok(lr)[0] || null, weather });
+    // No batch: the chamber isn't monitored, so only the outdoor weather.
+    return res.json({ batch: null, latestReading: null, weather: await ensureWeather() });
   }
   const [lr, recent, cnt, weather, camera] = await Promise.all([
     sb.from("readings").select("*").eq("batch_id", batch.id).order("ts", { ascending: false }).limit(1),
@@ -260,19 +261,54 @@ app.get("/api/images", h(async (req, res) => {
 // Each batch with its newest photo as a cover (Photos -> Transplanted Batch cards).
 app.get("/api/batches", h(async (_req, res) => {
   const batches = ok(await sb.from("batches").select("*").order("id", { ascending: false }));
-  const covers = await Promise.all(batches.map((b) =>
-    sb.from("images").select("file").eq("batch_id", b.id).order("ts", { ascending: false }).limit(1)));
+  const [covers, anyReading] = await Promise.all([
+    Promise.all(batches.map((b) => sb.from("images").select("file").eq("batch_id", b.id).order("ts", { ascending: false }).limit(1))),
+    Promise.all(batches.map((b) => sb.from("readings").select("id").eq("batch_id", b.id).limit(1))),
+  ]);
   res.json(batches.map((b, i) => {
     const file = covers[i].data?.[0]?.file;
-    return { ...b, cover: file ? imageUrl(file) : null };
+    const empty = !file && !anyReading[i].data?.length;
+    // When the Delete button unlocks (null while the batch is still being monitored).
+    const deletableFrom = b.status === "growing" ? null
+      : empty ? b.ended_at : new Date(new Date(b.ended_at).getTime() + DELETE_AFTER_DAYS * 86400000).toISOString();
+    return { ...b, cover: file ? imageUrl(file) : null, empty, deletable_from: deletableFrom };
   }));
 }));
 
-// "Start monitoring": batches are numbered Batch 1, Batch 2, ... in creation order.
+// "Start monitoring": batches are named Batch 1, Batch 2, ... using the lowest free number,
+// so a deleted batch's name is reused and the list has no gaps.
 app.post("/api/batches", h(async (_req, res) => {
   if (await activeBatch()) return res.status(409).json({ error: "A batch is already being monitored." });
-  const { count } = await sb.from("batches").select("id", { count: "exact", head: true });
-  res.json(ok(await sb.from("batches").insert({ name: `Batch ${(count || 0) + 1}` }).select().single()));
+  const used = new Set(ok(await sb.from("batches").select("name")).map((b) => Number(/^Batch (\d+)$/.exec(b.name)?.[1])));
+  let n = 1;
+  while (used.has(n)) n++;
+  res.json(ok(await sb.from("batches").insert({ name: `Batch ${n}` }).select().single()));
+}));
+
+// Ended batches can be deleted: right away if nothing was recorded (no readings, no photos),
+// otherwise only DELETE_AFTER_DAYS after the batch ended. The browser shows the same rule.
+const DELETE_AFTER_DAYS = 30;
+app.delete("/api/batches/:id", h(async (req, res) => {
+  const b = ok(await sb.from("batches").select("*").eq("id", req.params.id).single());
+  if (b.status === "growing") return res.status(409).json({ error: "Stop monitoring this batch before deleting it." });
+  const [rc, ic] = await Promise.all([
+    sb.from("readings").select("id", { count: "exact", head: true }).eq("batch_id", b.id),
+    sb.from("images").select("id", { count: "exact", head: true }).eq("batch_id", b.id),
+  ]);
+  const empty = !rc.count && !ic.count;
+  const age = (Date.now() - new Date(b.ended_at)) / 86400000;
+  if (!empty && age < DELETE_AFTER_DAYS)
+    return res.status(409).json({ error: `${b.name} has records. It can be deleted ${DELETE_AFTER_DAYS} days after it ended.` });
+
+  // Photo files first, then every row that points at the batch, then the batch itself.
+  const files = await fetchAll((x, y) => sb.from("images").select("file").eq("batch_id", b.id).range(x, y));
+  for (let i = 0; i < files.length; i += 100) {
+    const { error } = await sb.storage.from(BUCKET).remove(files.slice(i, i + 100).map((f) => f.file));
+    if (error) throw new Error(error.message);
+  }
+  for (const t of ["images", "readings", "actuator_runs", "alerts"]) ok(await sb.from(t).delete().eq("batch_id", b.id));
+  ok(await sb.from("batches").delete().eq("id", b.id));
+  res.json({ ok: true, deleted: b.name });
 }));
 
 async function buildSummary(batch, endedAt) {

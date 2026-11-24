@@ -16,7 +16,7 @@ create table batches (
 create unique index one_growing_batch on batches (status) where status = 'growing';
 
 -- Controller snapshot, every 5 min and whenever the float switch changes.
--- batch_id is null while no batch is being monitored.
+-- Only recorded while a batch is being monitored (the server drops readings between batches).
 create table readings (
   id bigint generated always as identity primary key,
   batch_id bigint references batches(id),

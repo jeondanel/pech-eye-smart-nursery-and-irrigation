@@ -31,4 +31,5 @@ export const api = {
   startBatch: () => post("/api/batches"),
   transplant: (id) => post(`/api/batches/${id}/transplant`),
   stopBatch: (id, notes) => post(`/api/batches/${id}/stop`, { notes }),
+  deleteBatch: (id) => req(`/api/batches/${id}`, { method: "DELETE" }),
 };

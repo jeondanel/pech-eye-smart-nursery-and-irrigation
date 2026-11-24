@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /* ---------- formatting ---------- */
 
@@ -53,6 +53,21 @@ export function sensorStatus(cfg, v) {
   return { label: cfg.labels[1], tone: "normal" };
 }
 
+// Plain-words rain status from the current precipitation (mm in the last hour) and the
+// highest forecast chance of rain in the next 24 h. Rates follow the usual light / moderate / heavy bands.
+export function rainStatus(w) {
+  if (!w) return null;
+  const mm = w.rain_1h ?? 0, chance = w.rain_chance_24h;
+  if (mm >= 7.6) return { text: "Heavy rain right now", tone: "info" };
+  if (mm >= 2.5) return { text: "Raining right now", tone: "info" };
+  if (mm > 0) return { text: "Light rain right now", tone: "info" };
+  if (chance == null) return { text: "Not raining", tone: "" };
+  if (chance >= 70) return { text: "Rain likely later", tone: "info" };
+  if (chance >= 30) return { text: "Rain possible later", tone: "" };
+  if (chance > 0) return { text: "Low chance of rain", tone: "" };
+  return { text: "No rain expected", tone: "" };
+}
+
 // Same rules as the controller's irrigation decision. Not shown on the dashboard for now.
 export function irrigationDecision(w, r) {
   if (!w || !r) return { tone: "grey", icon: "hourglass_top", title: "Irrigation decision pending", text: "Waiting for weather and sensor data." };
@@ -105,11 +120,30 @@ export function useNow(ms = 1000) {
   return now;
 }
 
-export function usePoll(fn, deps, ms = 10000) {
-  const [state, set] = useState({ data: null, error: null });
-  const run = useCallback(() => fn().then((data) => set({ data, error: null })).catch((error) => set((s) => ({ ...s, error }))), deps); // eslint-disable-line
-  useEffect(() => { run(); const t = setInterval(run, ms); return () => clearInterval(t); }, [run, ms]);
-  return { ...state, reload: run };
+// Last response per poll key, kept in memory for this tab only (cleared when the app locks).
+// Reopening a page shows it instantly while a fresh copy is fetched in the background.
+const pollCache = new Map();
+export const clearPollCache = () => pollCache.clear();
+
+// Fetches fn() now and every ms; `key` names the request (change it when fn's inputs change).
+// Polling pauses while the browser tab is hidden and refreshes as soon as it is visible again.
+export function usePoll(key, fn, ms = 10000) {
+  const fresh = () => ({ key, data: pollCache.get(key) ?? null, error: null });
+  const [state, set] = useState(fresh);
+  const fnRef = useRef(fn);
+  fnRef.current = fn;
+  const run = useCallback(() => fnRef.current()
+    .then((data) => { pollCache.set(key, data); set({ key, data, error: null }); })
+    .catch((error) => set((s) => ({ ...(s.key === key ? s : fresh()), error }))), [key]); // eslint-disable-line
+  useEffect(() => {
+    let t = null;
+    const start = () => { clearInterval(t); t = null; if (!document.hidden) { run(); t = setInterval(run, ms); } };
+    start();
+    document.addEventListener("visibilitychange", start);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", start); };
+  }, [run, ms]);
+  const view = state.key === key ? state : fresh(); // key just changed: show its cached copy, if any
+  return { data: view.data, error: view.error, reload: run };
 }
 
 // Tiny hash router: "#/photos?batch=3" -> { page: "photos", sub: undefined, params: { batch: "3" } }

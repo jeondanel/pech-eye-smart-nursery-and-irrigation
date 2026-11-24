@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, setPw } from "./api.js";
-import { useRoute } from "./lib.js";
-import { Clock, Icon, Login, Logo, ThemeToggle } from "./ui.jsx";
+import { clearPollCache, useRoute } from "./lib.js";
+import { Clock, Icon, InstallPopup, Login, Logo, ThemeToggle } from "./ui.jsx";
+import { installSnoozed } from "./pwa.js";
 import Dashboard from "./pages/Dashboard.jsx";
 import Photos from "./pages/Photos.jsx";
 import Batches from "./pages/Batches.jsx";
@@ -18,9 +19,11 @@ export default function App() {
   const { page, sub, params } = useRoute();
   // Locked on every open/reload; the password lives in memory only (see api.js).
   const [auth, setAuth] = useState({ locked: true, wrong: false, busy: false });
+  const [askInstall, setAskInstall] = useState(false);
+  const closeInstall = useCallback(() => setAskInstall(false), []);
 
   useEffect(() => {
-    const h = () => setAuth({ locked: true, wrong: false, busy: false });
+    const h = () => { clearPollCache(); setAuth({ locked: true, wrong: false, busy: false }); };
     window.addEventListener("pecheye-auth", h);
     return () => window.removeEventListener("pecheye-auth", h);
   }, []);
@@ -28,7 +31,7 @@ export default function App() {
   const login = async (p) => {
     setPw(p);
     setAuth({ locked: true, wrong: false, busy: true });
-    try { await api.session(); setAuth({ locked: false }); }
+    try { await api.session(); setAuth({ locked: false }); setAskInstall(!installSnoozed()); }
     catch { setAuth({ locked: true, wrong: true, busy: false }); }
   };
 
@@ -61,7 +64,8 @@ export default function App() {
           : page === "sensors" ? <SensorHistory kind={sub} key={sub} />
           : <Dashboard />}
       </main>
-      <ThemeToggle />
+      <ThemeToggle aboveNav={!auth.locked && !record} />
+      {askInstall && !auth.locked && <InstallPopup onClose={closeInstall} />}
     </>
   );
 }

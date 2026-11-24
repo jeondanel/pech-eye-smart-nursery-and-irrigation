@@ -7,7 +7,7 @@ import { STATUS_LABEL } from "./Batches.jsx";
 
 // Stand-alone page (no navigation bar) for a batch that has ended.
 export default function Record({ id }) {
-  const { data, error } = usePoll(() => api.images(id), [id], 60000);
+  const { data, error } = usePoll(`images:${id}`, () => api.images(id), 60000);
 
   if (error && !data) return <><Back /><div className="card"><Empty icon="cloud_off">Cannot load this record ({error.message}).</Empty></div></>;
   if (!data) return <><Back /><Skel /><Skel h={220} /></>;

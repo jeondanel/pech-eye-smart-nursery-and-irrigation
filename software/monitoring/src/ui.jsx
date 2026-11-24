@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { applyTheme, dayOf, useNow, useTheme } from "./lib.js";
+import { snoozeInstall, usePwa } from "./pwa.js";
 
 // Google Material Symbols (Rounded), loaded in index.html. Names: https://fonts.google.com/icons
 export const Icon = ({ name, className = "", fill = false }) => (
@@ -19,10 +20,11 @@ export function Logo({ size = 36 }) {
   );
 }
 
-export function ThemeToggle() {
+// aboveNav: on phones the tab bar sits at the bottom, so the button floats above it.
+export function ThemeToggle({ aboveNav }) {
   const dark = useTheme() === "dark";
   return (
-    <button className="theme-btn" onClick={() => applyTheme(dark ? "light" : "dark")}
+    <button className={`theme-btn ${aboveNav ? "above-nav" : ""}`} onClick={() => applyTheme(dark ? "light" : "dark")}
       aria-label={dark ? "Switch to light mode" : "Switch to dark mode"} title={dark ? "Light mode" : "Dark mode"}>
       <Icon name={dark ? "light_mode" : "dark_mode"} />
     </button>
@@ -74,6 +76,66 @@ export function Login({ wrong, busy, onSubmit }) {
       {wrong && <div className="err">Wrong password. Try again.</div>}
       <button className="btn block" type="submit" disabled={busy}>{busy ? "Checking..." : "Open dashboard"}</button>
     </form>
+  );
+}
+
+// Themed pop-up (instead of the browser's alert/confirm/prompt). Escape or a click outside closes it.
+export function Dialog({ icon, tone = "", title, children, onClose }) {
+  useEffect(() => {
+    const k = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", k);
+    document.body.style.overflow = "hidden";
+    return () => { window.removeEventListener("keydown", k); document.body.style.overflow = ""; };
+  }, [onClose]);
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="card modal" role="dialog" aria-modal="true" aria-labelledby="dlg-title" onClick={(e) => e.stopPropagation()}>
+        {icon && <Icon name={icon} fill className={`modal-ic ${tone}`} />}
+        <h2 id="dlg-title">{title}</h2>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const IosSteps = () => (
+  <p className="muted">
+    Tap <Icon name="ios_share" className="inline-ic" /> <b>Share</b> in Safari, then <b>Add to Home Screen</b>.
+  </p>
+);
+
+// Shown once after logging in (unless installed or snoozed).
+export function InstallPopup({ onClose }) {
+  const { mode, install } = usePwa();
+  if (!mode) return null;
+  const later = () => { snoozeInstall(); onClose(); };
+  return (
+    <Dialog icon="install_mobile" title="Install Pech-Eye" onClose={later}>
+      <p className="muted">Add the dashboard to your home screen to open it like an app, full screen and one tap away.</p>
+      {mode === "ios" && <IosSteps />}
+      <div className="modal-actions">
+        <button className="btn ghost" onClick={later}>Not now</button>
+        {mode === "prompt"
+          ? <button className="btn" autoFocus onClick={async () => { await install(); onClose(); }}><Icon name="download" />Install</button>
+          : <button className="btn" autoFocus onClick={onClose}>OK</button>}
+      </div>
+    </Dialog>
+  );
+}
+
+// Card at the bottom of the Dashboard; hidden once installed or when the browser can't install.
+export function InstallCard() {
+  const { mode, install } = usePwa();
+  if (!mode) return null;
+  return (
+    <div className="card install">
+      <Icon name="install_mobile" className="install-ic" />
+      <div>
+        <b>Install the Pech-Eye app</b>
+        {mode === "ios" ? <IosSteps /> : <p className="muted small">Open the dashboard from your home screen or desktop, like an app.</p>}
+      </div>
+      {mode === "prompt" && <button className="btn" onClick={install}><Icon name="download" />Install</button>}
+    </div>
   );
 }
 

@@ -1,8 +1,8 @@
 import { useCallback, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { api } from "../api.js";
-import { Empty, Icon, Lightbox, Skel, Stat, StatusDot } from "../ui.jsx";
-import { MIN_TRANSPLANT_DAY, SENSORS, ago, dayOf, fmt, longDate, sensorStatus, useChart, usePoll, when } from "../lib.js";
+import { Dialog, Empty, Icon, InstallCard, Lightbox, Skel, Stat, StatusDot } from "../ui.jsx";
+import { MIN_TRANSPLANT_DAY, SENSORS, ago, dayOf, fmt, longDate, rainStatus, sensorStatus, useChart, usePoll, when } from "../lib.js";
 
 const tone = (cfg, v) => ({ low: "info", high: "warn" })[sensorStatus(cfg, v)?.tone] || "";
 
@@ -16,7 +16,7 @@ const TRENDS = [
 
 export function Trends({ batch, links = true }) {
   const c = useChart();
-  const { data } = usePoll(() => api.readings(batch), [batch], 60000);
+  const { data } = usePoll(`readings:${batch}`, () => api.readings(batch), 60000);
   if (!data) return <Skel h={220} />;
   const rows = data.map((r) => ({ ...r, time: when(r.ts) }));
   const shown = TRENDS.filter((t) => rows.some((r) => r[t.key] != null));
@@ -116,25 +116,50 @@ function CameraControl({ camera, onChange }) {
 
 export function BatchActions({ batch, onDone }) {
   const [busy, setBusy] = useState(false);
+  const [ask, setAsk] = useState(null); // "transplant" | "stop" | null
+  const [reason, setReason] = useState("");
+  const [err, setErr] = useState(null);
+  const close = useCallback(() => { setAsk(null); setErr(null); }, []);
   const day = dayOf(batch.started_at);
   const canTransplant = day >= MIN_TRANSPLANT_DAY;
-  const run = async (fn) => { setBusy(true); try { await fn(); onDone(); } catch (e) { alert(e.message); } setBusy(false); };
-
-  const transplant = () => {
-    if (confirm(`Mark ${batch.name} as transplanted? This ends the batch and saves its summary.`)) run(() => api.transplant(batch.id));
-  };
-  const stop = () => {
-    const reason = prompt(`Stop monitoring ${batch.name}? It ends the batch and saves its record.\n\nReason (optional), e.g. "plants died":`);
-    if (reason !== null) run(() => api.stopBatch(batch.id, reason.trim() || null));
+  const run = async (fn) => {
+    setBusy(true); setErr(null);
+    try { await fn(); setAsk(null); setReason(""); onDone(); } catch (e) { setErr(e.message); }
+    setBusy(false);
   };
 
   return (
     <div className="batch-actions">
-      <button className="btn" onClick={transplant} disabled={busy || !canTransplant}
+      <button className="btn" onClick={() => setAsk("transplant")} disabled={busy || !canTransplant}
         title={canTransplant ? "" : `Available from Day ${MIN_TRANSPLANT_DAY}`}>
         <Icon name="move_down" />{canTransplant ? "Mark as transplanted" : `Transplant from Day ${MIN_TRANSPLANT_DAY}`}
       </button>
-      <button className="btn danger" onClick={stop} disabled={busy}><Icon name="stop_circle" />Stop monitoring</button>
+      <button className="btn danger" onClick={() => setAsk("stop")} disabled={busy}><Icon name="stop_circle" />Stop monitoring</button>
+
+      {ask === "transplant" && (
+        <Dialog icon="move_down" title={`Mark ${batch.name} as transplanted?`} onClose={close}>
+          <p className="muted">This ends the batch and saves its summary.</p>
+          {err && <div className="err">{err}</div>}
+          <div className="modal-actions">
+            <button className="btn ghost" onClick={close}>Cancel</button>
+            <button className="btn" autoFocus disabled={busy} onClick={() => run(() => api.transplant(batch.id))}>{busy ? "Saving..." : "Transplanted"}</button>
+          </div>
+        </Dialog>
+      )}
+      {ask === "stop" && (
+        <Dialog icon="stop_circle" tone="bad" title={`Stop monitoring ${batch.name}?`} onClose={close}>
+          <p className="muted">This ends the batch and saves its record.</p>
+          <textarea className="field" autoFocus maxLength={300} placeholder='Reason (optional), e.g. "plants died"'
+            value={reason} onChange={(e) => setReason(e.target.value)} />
+          {err && <div className="err">{err}</div>}
+          <div className="modal-actions">
+            <button className="btn ghost" onClick={close}>Cancel</button>
+            <button className="btn danger" disabled={busy} onClick={() => run(() => api.stopBatch(batch.id, reason.trim() || null))}>
+              {busy ? "Stopping..." : "Stop monitoring"}
+            </button>
+          </div>
+        </Dialog>
+      )}
     </div>
   );
 }
@@ -161,13 +186,15 @@ function Climate({ r, withSoil }) {
 }
 
 function Weather({ w }) {
+  const rain = rainStatus(w);
   return (
     <>
       <div className="sec-title">Outdoor Weather</div>
       <div className="stats">
         <Stat label="Temperature" value={fmt(w?.temp, "°C")} sub={w ? w.description : "weather not configured"} />
         <Stat label="Humidity" value={w?.humidity == null ? "—" : `${Math.round(w.humidity)}%`} />
-        <Stat label="Rain Chance (24 h)" value={w?.rain_chance_24h == null ? "—" : `${Math.round(w.rain_chance_24h)}%`} tone={w?.rain_chance_24h >= 50 ? "info" : ""} sub={w ? `wind ${fmt(w.wind_speed, " m/s")}` : ""} />
+        <Stat label="Precipitation" value={w ? fmt(w.rain_1h ?? 0, " mm/h") : "—"} tone={rain?.tone}
+          sub={w ? `${rain.text} · ${w.rain_chance_24h == null ? "" : `${Math.round(w.rain_chance_24h)}% chance in 24 h · `}wind ${fmt(w.wind_speed, " m/s")}` : ""} />
       </div>
     </>
   );
@@ -181,7 +208,7 @@ function StartMonitoring({ onDone }) {
       <Icon name="potted_plant" className="start-ic" />
       <div>
         <h2>No batch is being monitored</h2>
-        <p className="muted">Sow the tray, then start monitoring. Soil moisture, misting and tray photos are recorded from then on.</p>
+        <p className="muted">Sow the tray, then start monitoring. Chamber temperature, humidity, soil moisture, misting and tray photos are recorded from then on.</p>
       </div>
       <button className="btn" onClick={start} disabled={busy}><Icon name="play_arrow" />{busy ? "Starting..." : "Start monitoring"}</button>
     </div>
@@ -189,7 +216,7 @@ function StartMonitoring({ onDone }) {
 }
 
 export default function Dashboard() {
-  const { data, error, reload } = usePoll(() => api.dashboard(), []);
+  const { data, error, reload } = usePoll("dashboard", () => api.dashboard());
   const [analyzed, setAnalyzed] = useState(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(null);
@@ -207,7 +234,7 @@ export default function Dashboard() {
 
   const { batch, latestReading: r, weather: w } = data;
   if (!batch) {
-    return <><StartMonitoring onDone={reload} /><Climate r={r} /><Weather w={w} /></>;
+    return <><StartMonitoring onDone={reload} /><Weather w={w} /><InstallCard /></>;
   }
 
   const { recentImages, latestAnalyzed } = data;
@@ -302,6 +329,8 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      <InstallCard />
 
       {open !== null && <Lightbox images={recentImages} index={open} start={batch.started_at} onIndex={setOpen} onClose={close} />}
     </>

@@ -19,7 +19,7 @@ const dateTime = (iso) => {
 export function BatchPhotos({ batchId, mode, header }) {
   const [open, setOpen] = useState(null);
   const close = useCallback(() => setOpen(null), []);
-  const { data, error } = usePoll(() => api.images(batchId), [batchId], 20000);
+  const { data, error } = usePoll(`images:${batchId}`, () => api.images(batchId), 20000);
 
   if (error && !data) return <div className="card"><Empty icon="cloud_off">Cannot load photos ({error.message}).</Empty></div>;
   if (!data) return <Skel h={240} />;
@@ -66,7 +66,7 @@ export function BatchPhotos({ batchId, mode, header }) {
 }
 
 function TransplantedList() {
-  const { data, error } = usePoll(() => api.batches(), [], 60000);
+  const { data, error } = usePoll("batches", () => api.batches(), 60000);
   if (error && !data) return <div className="card"><Empty icon="cloud_off">Cannot load batches ({error.message}).</Empty></div>;
   if (!data) return <Skel h={200} />;
   const done = data.filter((b) => b.status === "transplanted");
@@ -93,7 +93,7 @@ function TransplantedList() {
 
 export default function Photos({ params }) {
   const tab = TABS.some(([k]) => k === params.tab) ? params.tab : "current";
-  const current = usePoll(() => api.batches(), [], 60000).data?.find((b) => b.status === "growing");
+  const current = usePoll("batches", () => api.batches(), 60000).data?.find((b) => b.status === "growing");
 
   return (
     <>
