@@ -73,7 +73,7 @@ export function Login({ wrong, busy, onSubmit }) {
       <h2>Pech-Eye</h2>
       <p className="muted">Enter the dashboard password to continue.</p>
       <input type="password" autoFocus autoComplete="current-password" placeholder="Password" value={p} onChange={(e) => setP(e.target.value)} />
-      {wrong && <div className="err">Wrong password. Try again.</div>}
+      {wrong && <div className="err">{wrong}</div>}
       <button className="btn block" type="submit" disabled={busy}>{busy ? "Checking..." : "Open dashboard"}</button>
     </form>
   );

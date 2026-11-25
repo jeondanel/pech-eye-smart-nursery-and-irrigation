@@ -32,7 +32,11 @@ export default function App() {
     setPw(p);
     setAuth({ locked: true, wrong: false, busy: true });
     try { await api.session(); setAuth({ locked: false }); setAskInstall(!installSnoozed()); }
-    catch { setAuth({ locked: true, wrong: true, busy: false }); }
+    catch (e) {
+      // 401 -> wrong password; anything else (e.g. 429 too many attempts) shows the server's message.
+      const msg = e.message === "Password required" ? "Wrong password. Try again." : e.message;
+      setAuth({ locked: true, wrong: msg, busy: false });
+    }
   };
 
   // Ended batches open as a stand-alone record page without the navigation bar.

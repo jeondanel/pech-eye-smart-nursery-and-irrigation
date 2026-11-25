@@ -1,4 +1,5 @@
 import express from "express";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import { sb, BUCKET, ok, fetchAll, imageUrl, activeBatch } from "./supabase.js";
 import { analyzeTray } from "./analyzer.js";
@@ -11,7 +12,12 @@ const app = express();
 
 // Flow rates used to estimate water use from relay ON time (measure: run 60 s into a cup).
 const ML_PER_MIN = { mist: Number(process.env.MIST_ML_PER_MIN || 0), pump: Number(process.env.PUMP_ML_PER_MIN || 0) };
-const h = (fn) => (req, res) => fn(req, res).catch((e) => { console.error(e); res.status(500).json({ error: e.message }); });
+// Unexpected errors: full details go to the server log only; the browser gets a generic message.
+// (Expected problems are answered with 4xx and a plain-words message in the route itself.)
+const h = (fn) => (req, res) => fn(req, res).catch((e) => {
+  console.error(`${req.method} ${req.path}:`, e);
+  res.status(500).json({ error: "Server error. Please try again." });
+});
 const num = (v) => (v === undefined || v === null || v === "" || Number.isNaN(Number(v)) ? null : Number(v));
 
 async function rawBody(req) {
@@ -28,14 +34,46 @@ async function jsonBody(req) {
 
 // Values pasted into Vercel often carry stray spaces/newlines/quotes, so compare them trimmed.
 const clean = (v) => String(v ?? "").trim().replace(/^(["'])(.*)\1$/, "$2");
+// Constant-time compare (hashing first makes both sides the same length), so response
+// timing does not reveal how much of a guess was right.
+const sha = (v) => createHash("sha256").update(v).digest();
+const sameSecret = (given, expected) => expected !== "" && timingSafeEqual(sha(clean(given)), sha(expected));
+
 const deviceAuth = (req, res, next) => {
-  const expected = clean(process.env.DEVICE_API_KEY);
-  if (!expected || clean(req.header("x-api-key")) !== expected) return res.status(401).json({ error: "bad api key" });
+  if (!sameSecret(req.header("x-api-key"), clean(process.env.DEVICE_API_KEY))) return res.status(401).json({ error: "bad api key" });
   next();
 };
+
+// Brute-force guard: after MAX_FAILS wrong passwords from one IP, that IP is locked out for
+// LOCK_MS. Best effort: it lives in this server instance's memory (Vercel reuses warm
+// instances, so it slows guessing a lot but is not a hard guarantee). For a hard limit add a
+// Vercel Firewall rule: Project -> Firewall -> Rate Limit on paths
+// starting with /api/, per IP, set well above what the dashboard's polling uses (e.g. 300 req/min).
+const MAX_FAILS = 10, LOCK_MS = 15 * 60000;
+const fails = new Map(); // ip -> { n, since }
+const clientIp = (req) => req.header("x-real-ip") || (req.header("x-forwarded-for") || "").split(",")[0].trim() || req.socket?.remoteAddress || "?";
+
 const dashAuth = (req, res, next) => {
   const pw = clean(process.env.DASHBOARD_PASSWORD);
-  if (pw && clean(req.header("x-dashboard-password")) !== pw) return res.status(401).json({ error: "password required" });
+  if (!pw) {
+    // Fail closed when deployed: a missing env var must not leave the dashboard open.
+    // An empty password is allowed only for local testing (dev-server.js).
+    if (process.env.VERCEL) return res.status(500).json({ error: "DASHBOARD_PASSWORD is not set on the server." });
+    return next();
+  }
+  const ip = clientIp(req), now = Date.now();
+  let f = fails.get(ip);
+  if (f && now - f.since > LOCK_MS) { fails.delete(ip); f = null; }
+  if (f && f.n >= MAX_FAILS) {
+    const mins = Math.ceil((f.since + LOCK_MS - now) / 60000);
+    return res.status(429).json({ error: `Too many wrong passwords. Try again in ${mins} min.` });
+  }
+  if (!sameSecret(req.header("x-dashboard-password"), pw)) {
+    fails.set(ip, f ? { ...f, n: f.n + 1 } : { n: 1, since: now });
+    if (fails.size > 5000) fails.clear(); // keep memory bounded
+    return res.status(401).json({ error: "password required" });
+  }
+  if (f) fails.delete(ip);
   next();
 };
 
