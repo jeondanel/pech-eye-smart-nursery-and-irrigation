@@ -95,7 +95,9 @@ function CameraControl({ camera, onChange }) {
   const [busy, setBusy] = useState(false);
   if (!camera) return null;
   const { pending, lastSeen, checkSeconds } = camera;
-  const online = !!lastSeen && Date.now() - new Date(lastSeen) < (checkSeconds || 300) * 3000 + 120000;
+  // Supabase records a check-in at most every 30 s (camera_poll), so allow that plus 3 missed
+  // checks and a little slack: an unplugged camera shows offline within about 45 s.
+  const online = !!lastSeen && Date.now() - new Date(lastSeen) < 30000 + (checkSeconds || 3) * 3000 + 5000;
   const act = async (fn) => { setBusy(true); try { await fn(); onChange(); } catch (e) { alert(e.message); } setBusy(false); };
 
   return (
