@@ -103,7 +103,7 @@ function CameraControl({ camera, onChange }) {
       <Icon name="photo_camera" className="camctl-ic" />
       <div>
         <b>{pending ? "Photo requested" : "Take a photo now"}</b>
-        <StatusDot on={online} label={online ? "Camera online" : "Camera offline"} />
+        <StatusDot on={online} label={online ? "Camera online" : `Camera offline${lastSeen ? ` (last seen ${when(lastSeen)})` : ""}`} />
       </div>
       {pending
         ? <button className="btn ghost" disabled={busy} onClick={() => act(api.cancelPhoto)}>Cancel request</button>

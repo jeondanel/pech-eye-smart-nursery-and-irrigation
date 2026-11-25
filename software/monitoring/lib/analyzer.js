@@ -5,11 +5,12 @@
 //   no green              -> "Still growing" (seedlings not visible yet)
 //   some green            -> "Growing"
 //   full of green (no soil/black visible, canopy >= FULL_GREEN_PCT) -> ready: alert the user
-// The photo is also split into a ROWS x COLS grid (72 holes = 6 x 12) for the hole map.
+// The photo is also split into a ROWS x COLS grid for the hole map:
+// 256 holes = two 128-hole trays (8 x 16 each) placed side by side -> 16 x 16.
 import jpeg from "jpeg-js";
 
-const ROWS = Number(process.env.TRAY_ROWS || 6);
-const COLS = Number(process.env.TRAY_COLS || 12);
+const ROWS = Number(process.env.TRAY_ROWS || 16);
+const COLS = Number(process.env.TRAY_COLS || 16);
 const EXG_THRESHOLD = Number(process.env.EXG_THRESHOLD || 0.1);
 const EMPTY_COVER = Number(process.env.EMPTY_COVER || 0.05);   // below this = empty hole
 const READY_COVER = Number(process.env.READY_COVER || 0.5);    // at/above this = hole covered in green

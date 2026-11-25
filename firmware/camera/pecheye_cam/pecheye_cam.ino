@@ -156,13 +156,24 @@ String photoDue() {
   url += "/rest/v1/rpc/camera_poll";
   pollHttp.setReuse(true);
   pollHttp.setTimeout(8000);
-  if (!pollHttp.begin(pollTls, url)) return "";
+  if (!pollHttp.begin(pollTls, url)) { Serial.println("Supabase check -> bad SUPABASE_URL"); return ""; }
   pollHttp.addHeader("apikey", SUPABASE_KEY);
   pollHttp.addHeader("Content-Type", "application/json");
   int code = pollHttp.POST("{\"p_every\":" + String(CHECK_SECONDS) + "}");
-  String body = code == 200 ? pollHttp.getString() : "";
+  String body = code > 0 ? pollHttp.getString() : "";
   pollHttp.end();
-  if (code != 200) { Serial.printf("Supabase check -> HTTP %d\n", code); return ""; }
+  if (code != 200) {
+    // < 0 = no connection (Wi-Fi/TLS/DNS), 401 = wrong SUPABASE_KEY, 404 = camera_poll() missing.
+    Serial.printf("Supabase check -> HTTP %d %s\n", code,
+                  code < 0 ? HTTPClient::errorToString(code).c_str() : body.c_str());
+    pollTls.stop();   // drop a broken kept-alive connection so the next check reconnects cleanly
+    return "";
+  }
+  static uint32_t lastOkLog = 0;
+  if (!lastOkLog || millis() - lastOkLog > 60000UL) {   // proof of life, once a minute
+    lastOkLog = millis();
+    Serial.println("Supabase check OK (dashboard shows the camera online)");
+  }
   if (body.indexOf("scheduled") >= 0) return "scheduled";
   if (body.indexOf("manual") >= 0) return "manual";
   return "";
